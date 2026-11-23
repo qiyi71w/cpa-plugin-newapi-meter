@@ -59,6 +59,8 @@ func (p *Plugin) handle(raw []byte) managementResponse {
 		return p.overview(ctx, req.Query)
 	case "POST " + RoutePrefix + "/accounts/test":
 		return p.testConnection(ctx, req.Body)
+	case "GET " + RoutePrefix + "/detail":
+		return p.detail(ctx, req.Query)
 	}
 	return apiError(http.StatusNotFound, errorBody{Code: "not_found"})
 }
@@ -242,6 +244,7 @@ func (p *Plugin) deleteAccount(id string) managementResponse {
 
 func (p *Plugin) forget(id string) {
 	p.overviews.Forget(id)
+	p.periods.Forget(id)
 	p.okMu.Lock()
 	delete(p.lastOK, id)
 	p.okMu.Unlock()
@@ -320,17 +323,7 @@ func (p *Plugin) overviewOf(ctx context.Context, a store.Account, force bool) ov
 		item.FetchedAt = p.now()
 		return item
 	}
-	key := cache.Key{Account: a.ID, Query: "overview", Fingerprint: fingerprint(a)}
-	r, at, hit := p.overviews.Get(key, force, func() newapi.Reading {
-		r := p.source.Fetch(ctx, a)
-		p.logReading(a.ID, r)
-		if r.Succeeded() {
-			p.okMu.Lock()
-			p.lastOK[a.ID] = r.FetchedAt
-			p.okMu.Unlock()
-		}
-		return r
-	})
+	r, at, hit := p.reading(ctx, a, force)
 	sum := newapi.Summarize(r, a.LowBalanceThreshold)
 	item.CredentialKind = r.CredentialKind
 	if r.Site != nil {
@@ -351,10 +344,119 @@ func (p *Plugin) overviewOf(ctx context.Context, a store.Account, force bool) ov
 	return item
 }
 
-// logReading records failed endpoints by class only: no URL query, header,
+// reading is an account's today query, shared by the overview and today's
+// period of the detail through one cache entry.
+func (p *Plugin) reading(ctx context.Context, a store.Account, force bool) (newapi.Reading, time.Time, bool) {
+	key := cache.Key{Account: a.ID, Query: "overview", Fingerprint: fingerprint(a)}
+	return p.overviews.Get(key, force, func() newapi.Reading {
+		r := p.source.Fetch(ctx, a)
+		p.logProbes(a.ID, r.Probes)
+		if r.Succeeded() {
+			p.okMu.Lock()
+			p.lastOK[a.ID] = r.FetchedAt
+			p.okMu.Unlock()
+		}
+		return r
+	})
+}
+
+// detailResponse is one built-in account's figures for one period.
+type detailResponse struct {
+	ID            string           `json:"id"`
+	Period        periodView       `json:"period"`
+	Timezone      string           `json:"timezone"`
+	Currency      *newapi.Currency `json:"currency"`
+	DataExport    *bool            `json:"data_export"`
+	Spend         *float64         `json:"spend"`
+	SpendFailure  *status.Failure  `json:"spend_failure"`
+	Usage         *newapi.Usage    `json:"usage"`
+	UsageFailure  *status.Failure  `json:"usage_failure"`
+	UsageDisabled bool             `json:"usage_disabled"`
+	FetchedAt     time.Time        `json:"fetched_at"`
+	Cached        bool             `json:"cached"`
+}
+
+type periodView struct {
+	Preset      string    `json:"preset"`
+	StartDate   string    `json:"start_date"`
+	EndDate     string    `json:"end_date"`
+	Days        int       `json:"days"`
+	Start       time.Time `json:"start"`
+	End         time.Time `json:"end"`
+	Granularity string    `json:"granularity"`
+	IncludesNow bool      `json:"includes_now"`
+	Minutes     float64   `json:"minutes"`
+}
+
+// detail serves GET .../detail. Query: id; period = today (default) |
+// yesterday | 7d | 30d | custom, with start and end (YYYY-MM-DD, both
+// included) for custom; force=1 bypasses the cache. Period queries never
+// change the account status: today's period reads the overview's cached
+// query, other periods have their own cache entries.
+func (p *Plugin) detail(ctx context.Context, q url.Values) managementResponse {
+	s, err := p.currentStore()
+	if err != nil {
+		return p.storeFailure(err)
+	}
+	id := q.Get("id")
+	if id == "" {
+		return apiError(http.StatusBadRequest, errorBody{Code: "validation_failed", Field: "id", Reason: store.ReasonRequired})
+	}
+	a, err := s.Get(id)
+	if err != nil {
+		return p.storeFailure(err)
+	}
+	if a.Source != store.SourceNewAPI {
+		return apiError(http.StatusBadRequest, errorBody{Code: "validation_failed", Field: "id", Reason: store.ReasonUnsupported})
+	}
+	now := p.now()
+	per, err := newapi.ResolvePeriod(now, q.Get("period"), q.Get("start"), q.Get("end"))
+	if err != nil {
+		var pe *newapi.PeriodError
+		errors.As(err, &pe)
+		return apiError(http.StatusBadRequest, errorBody{Code: "validation_failed", Field: pe.Field, Reason: pe.Reason})
+	}
+	force := q.Get("force") == "1" || q.Get("force") == "true"
+
+	var (
+		sum newapi.PeriodSummary
+		at  time.Time
+		hit bool
+	)
+	if per.IsToday(now) {
+		r, rat, rhit := p.reading(ctx, a, force)
+		if !r.TodayStart.Equal(per.Start) {
+			// The cached reading is from before local midnight.
+			r, rat, rhit = p.reading(ctx, a, true)
+		}
+		sum, at, hit = newapi.SummarizePeriod(r.TodayPeriod(), per), rat, rhit
+	} else {
+		key := cache.Key{Account: a.ID, Query: "period:" + per.StartDate + ":" + per.EndDate, Fingerprint: fingerprint(a)}
+		sum, at, hit = p.periods.Get(key, force, func() newapi.PeriodSummary {
+			r := p.source.FetchPeriod(ctx, a, per)
+			p.logProbes(a.ID, r.Probes)
+			return newapi.SummarizePeriod(r, per)
+		})
+	}
+	zone, _ := now.Zone()
+	return jsonResponse(http.StatusOK, detailResponse{
+		ID: a.ID,
+		Period: periodView{
+			Preset: per.Preset, StartDate: per.StartDate, EndDate: per.EndDate, Days: per.Days,
+			Start: per.Start, End: per.End, Granularity: per.Granularity,
+			IncludesNow: sum.IncludesNow, Minutes: sum.Minutes,
+		},
+		Timezone: zone, Currency: sum.Currency, DataExport: sum.DataExport,
+		Spend: sum.Spend, SpendFailure: sum.SpendFailure,
+		Usage: sum.Usage, UsageFailure: sum.UsageFailure, UsageDisabled: sum.UsageDisabled,
+		FetchedAt: at, Cached: hit,
+	})
+}
+
+// logProbes records failed endpoints by class only: no URL query, header,
 // credential or response body is logged.
-func (p *Plugin) logReading(id string, r newapi.Reading) {
-	for _, pr := range r.Probes {
+func (p *Plugin) logProbes(id string, probes []status.Probe) {
+	for _, pr := range probes {
 		if pr.Failure != nil {
 			p.log.Warn("site query failed", "account", id, "endpoint", pr.Name,
 				"failure", string(pr.Failure.Code), "diagnostic", pr.Failure.Diagnostic, "http_status", pr.Failure.HTTPStatus)

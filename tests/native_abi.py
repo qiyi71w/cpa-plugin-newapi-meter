@@ -105,7 +105,7 @@ def main(path):
     routes = {(r["Method"], r["Path"]) for r in mreg["routes"]}
     assert routes == {("GET", ROUTE + "/accounts"), ("POST", ROUTE + "/accounts"), ("PUT", ROUTE + "/accounts"),
                       ("DELETE", ROUTE + "/accounts"), ("GET", ROUTE + "/overview"),
-                      ("POST", ROUTE + "/accounts/test")}, routes
+                      ("POST", ROUTE + "/accounts/test"), ("GET", ROUTE + "/detail")}, routes
 
     status, headers, body = handle("GET", PAGE)
     assert status == 200 and headers["Content-Type"] == ["text/html; charset=utf-8"], (status, headers)
@@ -134,12 +134,16 @@ def main(path):
         tested = json.loads(body)
         assert tested["ok"] and tested["credential_kind"] == "pat" and tested["currency"]["code"] == "USD", tested
         assert open(os.path.join(data_dir, "accounts.json"), "rb").read() == before
+        status, _, body = handle("GET", ROUTE + "/detail", {"id": [account_id], "period": ["today"]})
+        assert status == 200 and PAT.encode() not in body
+        detail = json.loads(body)
+        assert detail["spend"] == 1 and detail["cached"] and detail["period"]["granularity"] == "hour", detail
         if os.name != "nt":
             assert stat.S_IMODE(os.stat(data_dir).st_mode) == 0o700
             assert stat.S_IMODE(os.stat(os.path.join(data_dir, "accounts.json")).st_mode) == 0o600
         status, _, _ = handle("DELETE", ROUTE + "/accounts", {"id": [account_id]})
         assert status == 200
-        print("PASS management routes: create, masked list, overview and connection test against synthetic site, delete")
+        print("PASS management routes: create, masked list, overview, connection test and today's detail against synthetic site, delete")
     finally:
         site.shutdown()
 

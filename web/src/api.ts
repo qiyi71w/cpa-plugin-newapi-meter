@@ -1,4 +1,13 @@
-import type { AccountInput, AccountList, AccountView, ApiErrorBody, ConnectionTest, Overview } from "./types";
+import type {
+  AccountDetail,
+  AccountInput,
+  AccountList,
+  AccountView,
+  ApiErrorBody,
+  ConnectionTest,
+  Overview,
+  PeriodChoice,
+} from "./types";
 
 const PAGE_SUFFIX = "/v0/resource/plugins/newapi-meter/index.html";
 
@@ -97,4 +106,20 @@ export async function deleteAccount(key: string, id: string): Promise<void> {
 /** Tries unsaved form values once; with `id`, a blank credential means the stored one. Never saves. */
 export function testConnection(key: string, input: AccountInput, id?: string): Promise<ConnectionTest> {
   return request<ConnectionTest>(key, "/accounts/test", { method: "POST", body: id ? { id, ...input } : input });
+}
+
+export interface DetailQuery {
+  id: string;
+  period: PeriodChoice;
+  force?: boolean;
+}
+
+export function getDetail(key: string, q: DetailQuery): Promise<AccountDetail> {
+  const p = new URLSearchParams({ id: q.id, period: q.period.preset });
+  if (q.period.preset === "custom") {
+    p.set("start", q.period.start ?? "");
+    p.set("end", q.period.end ?? "");
+  }
+  if (q.force) p.set("force", "1");
+  return request<AccountDetail>(key, `/detail?${p.toString()}`);
 }

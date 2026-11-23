@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
-import { ApiError, getOverview, type OverviewOptions } from "./api";
+import { ApiError, getDetail, getOverview, type DetailQuery, type OverviewOptions } from "./api";
 import { readSavedKey } from "./auth";
 import { PANEL_ID, TabBand, tabId } from "./band";
 import { Detail, MANAGE_BUTTON_ID } from "./detail";
@@ -7,7 +7,7 @@ import { t } from "./i18n";
 import { Manage, type ManageTarget } from "./manage";
 import { defaultSelection } from "./model";
 import { Empty, EMPTY_ADD_ID, KeyPrompt, Loading, LoadError } from "./states";
-import type { Overview } from "./types";
+import type { Overview, PeriodChoice } from "./types";
 
 type Phase = { kind: "loading" } | { kind: "key"; rejected: boolean } | { kind: "error"; error: unknown } | { kind: "ready" };
 
@@ -41,6 +41,9 @@ export function App() {
   const stale = useRef(false);
   // Element to focus once the dashboard is back.
   const returnFocus = useRef<string | null>(null);
+  // The period stays selected when the user moves to another account.
+  const [period, setPeriod] = useState<PeriodChoice>({ preset: "today" });
+  const [refreshSeq, setRefreshSeq] = useState(0);
 
   const load = async (opts: OverviewOptions) => {
     if (!key.current) {
@@ -69,6 +72,19 @@ export function App() {
     setBusy(scope);
     await load("id" in scope ? { force: true, id: scope.id } : { force: true });
     setBusy(null);
+    setRefreshSeq((n) => n + 1);
+  };
+
+  const loadDetail = async (q: DetailQuery) => {
+    try {
+      return await getDetail(key.current ?? "", q);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) {
+        key.current = null;
+        setPhase({ kind: "key", rejected: true });
+      }
+      throw e;
+    }
   };
 
   useLayoutEffect(() => {
@@ -173,6 +189,11 @@ export function App() {
               onRetry={() => void refresh({ id: account.id })}
               onManage={() => manage({ kind: "list" })}
               onReplaceCredential={() => manage({ kind: "form", id: account.id, focusCredential: true, back: "dashboard" })}
+              clock={{ today: data.today_start.slice(0, 10), timezone: data.timezone }}
+              period={period}
+              onPeriod={setPeriod}
+              refreshSeq={refreshSeq}
+              loadDetail={loadDetail}
             />
           </div>
         </section>

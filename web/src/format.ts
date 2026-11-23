@@ -55,3 +55,41 @@ const stampFmt = new Intl.DateTimeFormat(locale, { month: "2-digit", day: "2-dig
 export function stamp(iso: string): string {
   return stampFmt.format(new Date(iso));
 }
+
+const countFmt = new Intl.NumberFormat(locale, { maximumFractionDigits: 0 });
+
+/** Whole counts (requests) with grouping; compact from a million up. */
+export function count(v: number): string {
+  return Math.abs(v) >= 1e6 ? compact(v) : countFmt.format(v);
+}
+
+/** Full count for tooltips next to compact figures. */
+export function fullCount(v: number): string {
+  return countFmt.format(v);
+}
+
+// CPA-local calendar dates (YYYY-MM-DD) are formatted as UTC dates so the
+// browser's own zone never shifts them.
+const dayFmt = new Intl.DateTimeFormat(locale, { month: "short", day: "numeric", timeZone: "UTC" });
+const dayYearFmt = new Intl.DateTimeFormat(locale, { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" });
+const dayShortFmt = new Intl.DateTimeFormat(locale, { month: "numeric", day: "numeric", timeZone: "UTC" });
+const weekdayFmt = new Intl.DateTimeFormat(locale, { weekday: "short", timeZone: "UTC" });
+
+function utcDate(date: string): Date {
+  const [y, m, d] = date.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d));
+}
+
+/** "11月23日" / "Nov 23"; with the year when it is not the current one. */
+export function dayLabel(date: string, currentYear: string): string {
+  return (date.slice(0, 4) === currentYear ? dayFmt : dayYearFmt).format(utcDate(date));
+}
+
+/** Axis label: "11/23". */
+export function dayTick(date: string): string {
+  return dayShortFmt.format(utcDate(date));
+}
+
+export function weekday(date: string): string {
+  return weekdayFmt.format(utcDate(date));
+}
