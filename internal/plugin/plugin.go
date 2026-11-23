@@ -64,6 +64,7 @@ type Plugin struct {
 	defaultStore func() (*store.Store, error)
 	source       *newapi.Source
 	overviews    *cache.Cache[newapi.Reading]
+	periods      *cache.Cache[newapi.PeriodSummary]
 
 	mu       sync.RWMutex
 	store    *store.Store
@@ -95,6 +96,7 @@ func New(opts Options) *Plugin {
 		page:         opts.Page,
 		defaultStore: opts.DefaultStore,
 		overviews:    cache.New[newapi.Reading](cache.TTL, opts.Now),
+		periods:      cache.New[newapi.PeriodSummary](cache.TTL, opts.Now),
 		lastOK:       map[string]time.Time{},
 		storeErr:     fmt.Errorf("plugin not registered"),
 	}
@@ -239,6 +241,7 @@ var Routes = []route{
 	{"PUT", RoutePrefix + "/accounts"},
 	{"DELETE", RoutePrefix + "/accounts"},
 	{"GET", RoutePrefix + "/overview"},
+	{"GET", RoutePrefix + "/detail"},
 }
 
 func registration() any {

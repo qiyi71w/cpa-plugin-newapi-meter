@@ -1,12 +1,11 @@
-// Balance-level detail of the selected account.
-import { ago, compact, money, rate, stamp } from "./format";
+// Detail of the selected account: the title row, then the period region
+// (period.tsx) or the needs-action alert.
+import type { DetailQuery } from "./api";
+import { ago, stamp } from "./format";
 import { t, tDynamic } from "./i18n";
 import { Icon } from "./icons";
-import type { Failure, OverviewAccount } from "./types";
-
-function failureTitle(f: Failure | null | undefined): string {
-  return f ? tDynamic(`failure.${f.code}`, f.code) : "";
-}
+import { failureTitle, PeriodDetail, type Clock } from "./period";
+import type { AccountDetail, OverviewAccount, PeriodChoice } from "./types";
 
 function RefreshButton(p: { refreshing: boolean; onRefresh: () => void; idle: string; busy: string; hint?: string; primary?: boolean }) {
   return (
@@ -56,63 +55,6 @@ function Head(p: { a: OverviewAccount; nowMs: number; refreshing: boolean; onRef
         hint={t("detail.refreshHint")}
       />
     </header>
-  );
-}
-
-interface Cell {
-  key: string;
-  label: string;
-  value: string;
-  sub?: string;
-  tone?: "warn" | "muted";
-}
-
-function unavailable(key: string, label: string, f: Failure | null): Cell {
-  return { key, label, value: t("metric.unavailable"), sub: failureTitle(f), tone: "muted" };
-}
-
-function balanceCell(a: OverviewAccount): Cell {
-  if (a.balance == null) return unavailable("balance", t("metric.balance"), a.balance_failure);
-  const th = a.low_balance_threshold;
-  const value = money(a.balance, a.currency);
-  if (a.state === "partial") return { key: "balance", label: t("metric.balance"), value, sub: t("metric.thresholdSkipped") };
-  if (th == null) return { key: "balance", label: t("metric.balance"), value, sub: t("metric.noThreshold") };
-  const low = a.state === "low";
-  return {
-    key: "balance",
-    label: t("metric.balance"),
-    value,
-    sub: t(low ? "metric.belowThreshold" : "metric.threshold", { amount: money(th, a.currency) }),
-    tone: low ? "warn" : undefined,
-  };
-}
-
-function Metrics(p: { a: OverviewAccount }) {
-  const { a } = p;
-  const cells: Cell[] = [
-    balanceCell(a),
-    a.total_used == null
-      ? unavailable("used", t("metric.totalUsed"), a.balance_failure)
-      : { key: "used", label: t("metric.totalUsed"), value: money(a.total_used, a.currency) },
-    a.today_spend == null
-      ? unavailable("today", t("metric.todaySpend"), a.today_failure)
-      : { key: "today", label: t("metric.todaySpend"), value: money(a.today_spend, a.currency) },
-    a.rpm == null && a.tpm == null
-      ? unavailable("rt", t("metric.realtime"), a.today_failure)
-      : { key: "rt", label: t("metric.realtime"), value: `${rate(a.rpm)} / ${a.tpm == null ? "—" : compact(a.tpm)}`, sub: t("metric.realtimeSub") },
-  ];
-  return (
-    <dl class="nm-metrics">
-      {cells.map((c) => (
-        <div key={c.key} class="nm-m" data-tone={c.tone}>
-          <dt class="nm-m-label">{c.label}</dt>
-          <dd class="nm-m-value" title={c.value}>
-            {c.value}
-          </dd>
-          {c.sub && <dd class="nm-m-sub">{c.sub}</dd>}
-        </div>
-      ))}
-    </dl>
   );
 }
 
@@ -177,6 +119,11 @@ export function Detail(p: {
   retrying: boolean;
   onRefresh: () => void;
   onRetry: () => void;
+  clock: Clock;
+  period: PeriodChoice;
+  onPeriod: (c: PeriodChoice) => void;
+  refreshSeq: number;
+  loadDetail: (q: DetailQuery) => Promise<AccountDetail>;
 }) {
   const { a } = p;
   return (
@@ -185,10 +132,18 @@ export function Detail(p: {
       {a.state === "needs_action" ? (
         <NeedsAction a={a} refreshing={p.retrying || p.refreshing} onRetry={p.onRetry} />
       ) : (
-        <>
-          <Metrics a={a} />
+        <PeriodDetail
+          a={a}
+          clock={p.clock}
+          choice={p.period}
+          onChoice={p.onPeriod}
+          refreshSeq={p.refreshSeq}
+          loadDetail={p.loadDetail}
+          retryingToday={p.retrying || p.refreshing}
+          onRetryToday={p.onRetry}
+        >
           {a.state === "partial" && <PartialNote a={a} />}
-        </>
+        </PeriodDetail>
       )}
     </>
   );

@@ -69,3 +69,67 @@ export interface ApiErrorBody {
   reason?: string;
   path?: string;
 }
+
+export type PeriodPreset = "today" | "yesterday" | "7d" | "30d" | "custom";
+
+/** The selected period; custom carries its applied dates (YYYY-MM-DD, CPA's zone). */
+export interface PeriodChoice {
+  preset: PeriodPreset;
+  start?: string;
+  end?: string;
+}
+
+export interface ModelUsage {
+  model: string;
+  spend: number;
+  /** of the period's spend, 0..1 */
+  share: number;
+  requests: number;
+  tokens: number;
+}
+
+/** One hour or day; the arrays follow Usage.models. */
+export interface UsageBucket {
+  /** RFC 3339 in CPA's zone, e.g. 2026-11-23T10:00:00+08:00 */
+  start: string;
+  spend: number[];
+  requests: number[];
+  tokens: number[];
+}
+
+export interface Usage {
+  spend: number;
+  requests: number;
+  tokens: number;
+  avg_rpm: number | null;
+  avg_tpm: number | null;
+  models: ModelUsage[];
+  buckets: UsageBucket[];
+}
+
+export interface PeriodInfo {
+  preset: PeriodPreset;
+  start_date: string;
+  end_date: string;
+  days: number;
+  start: string;
+  end: string;
+  granularity: "hour" | "day";
+  includes_now: boolean;
+  minutes: number;
+}
+
+export interface AccountDetail {
+  id: string;
+  period: PeriodInfo;
+  timezone: string;
+  currency: Currency | null;
+  data_export: boolean | null;
+  spend: number | null;
+  spend_failure: Failure | null;
+  usage: Usage | null;
+  usage_failure: Failure | null;
+  usage_disabled: boolean;
+  fetched_at: string;
+  cached: boolean;
+}

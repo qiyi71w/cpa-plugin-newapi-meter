@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from "preact/hooks";
-import { ApiError, getOverview, type OverviewOptions } from "./api";
+import { ApiError, getDetail, getOverview, type DetailQuery, type OverviewOptions } from "./api";
 import { readSavedKey } from "./auth";
 import { PANEL_ID, TabBand, tabId } from "./band";
 import { Detail } from "./detail";
 import { t } from "./i18n";
 import { defaultSelection } from "./model";
 import { Empty, KeyPrompt, Loading, LoadError } from "./states";
-import type { Overview } from "./types";
+import type { Overview, PeriodChoice } from "./types";
 
 type Phase = { kind: "loading" } | { kind: "key"; rejected: boolean } | { kind: "error"; error: unknown } | { kind: "ready" };
 
@@ -32,6 +32,9 @@ export function App() {
   const [refreshFailed, setRefreshFailed] = useState(false);
   const lastShown = useRef<string | null>(null);
   const nowMs = useNow(15_000);
+  // The period stays selected when the user moves to another account.
+  const [period, setPeriod] = useState<PeriodChoice>({ preset: "today" });
+  const [refreshSeq, setRefreshSeq] = useState(0);
 
   const load = async (opts: OverviewOptions) => {
     if (!key.current) {
@@ -61,6 +64,19 @@ export function App() {
     setBusy(scope);
     await load("id" in scope ? { force: true, id: scope.id } : { force: true });
     setBusy(null);
+    setRefreshSeq((n) => n + 1);
+  };
+
+  const loadDetail = async (q: DetailQuery) => {
+    try {
+      return await getDetail(key.current ?? "", q);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) {
+        key.current = null;
+        setPhase({ kind: "key", rejected: true });
+      }
+      throw e;
+    }
   };
 
   useEffect(() => {
@@ -116,6 +132,11 @@ export function App() {
               retrying={busy !== null && "id" in busy && busy.id === account.id}
               onRefresh={() => void refresh({ all: true })}
               onRetry={() => void refresh({ id: account.id })}
+              clock={{ today: data.today_start.slice(0, 10), timezone: data.timezone }}
+              period={period}
+              onPeriod={setPeriod}
+              refreshSeq={refreshSeq}
+              loadDetail={loadDetail}
             />
           </div>
         </section>

@@ -15,8 +15,18 @@ CPA（CLIProxyAPI）原生插件。在 CPA WebUI 或 EasyCLIProxyAPI 的插件�
 - 金额按站点的显示货币换算（美元、人民币、自定义货币或 token 数）；所有能计入的账户显示货币一致时，页签带最左侧显示「全部账户合计」。
 - 账户状态：正常、余额偏低、部分可用（部分数据读不到，例如余额被站点防护拦截）、需处理（凭据相关的查询全部失败），并给出失败原因和下一步。
 - 今日按 **CPA 所在机器的本地时区**从零点算起。
+- 账户详情可以选统计区间，显示区间花费、请求数、token 数、平均 RPM/TPM，以及按模型的花费分布、按时间的花费柱状图、调用趋势和按模型用量明细。
 
-账户目前通过下文的管理路由增删改；页面内的账户管理界面、统计区间与图表、自定义查询、跟随 CPA 代理会在后续版本加入。在那之前，所有账户都直连站点（不使用任何代理，包括环境变量里的代理）。
+账户目前通过下文的管理路由增删改；页面内的账户管理界面、自定义查询、跟随 CPA 代理会在后续版本加入。在那之前，所有账户都直连站点（不使用任何代理，包括环境变量里的代理）。
+
+## 统计区间的口径
+
+- **时区**：所有区间都按 CPA 所在机器的本地时区换算，不按浏览器所在机器。预设区间有今日、昨日、近 7 天（含今天）、近 30 天（含今天）；自定义区间是一对起止日期，含首尾两天，最长 365 天，结束日期不能晚于今天。跨夏令时切换的日子按本地自然日计（那天可能是 23 或 25 小时）。
+- **粒度**：区间不超过 2 天按小时分桶，更长按本地自然日分桶。区间包含当前时刻时，分桶截止到现在。
+- **数据来源与延迟**：区间花费的主数字来自站点的 `/api/log/self/stat`，是实时的；请求数、token 数、按模型的花费与分布来自站点的数据看板（`/api/data/self`），约有 **5 分钟延迟**，所以区间包含当前时刻时，页面会注明「用量约有 5 分钟延迟」，明细表的合计花费也可能略小于区间花费。
+- **平均 RPM / TPM**：区间内的请求数 / token 数除以区间分钟数；区间包含当前时刻时，分钟数只算到现在。实时 RPM / TPM 是站点给出的最近 60 秒数值，不随区间变化。
+- **站点未开启数据看板**（`/api/status` 里 `enable_data_export` 为 false）时，站点不记录按模型用量：页面在用量的位置说明原因，请站点管理员在站点设置里开启「数据看板」，开启之后产生的调用才会出现。账户状态不受影响，区间花费照常显示。
+- 所选区间的查询失败（例如站点限制了最长可查询的天数，以 `success: false` 拒绝较长的区间）只在详情里显示失败原因和「重试」，**不改变账户状态**；账户状态只由今日的查询决定。
 
 ## 所需权限
 
@@ -29,7 +39,7 @@ CPA（CLIProxyAPI）原生插件。在 CPA WebUI 或 EasyCLIProxyAPI 的插件�
 
 ```bash
 bun run typecheck                 # 前端类型检查
-bun run test:web                  # 前端单元测试（Management Key 的三种存储格式）
+bun run test:web                  # 前端单元测试（Management Key 的三种存储格式、统计区间规则）
 go test ./...                     # Go 测试（合成的假站点，不访问网络）
 bun run build                     # 先构建页面，再构建插件
 python3 tests/native_abi.py dist/linux/amd64/newapi-meter.so   # 加载真实产物的 C ABI 冒烟
@@ -71,6 +81,7 @@ plugins:
 | PUT | `/v0/management/plugins/newapi-meter/accounts` | JSON 账户 + `id` | 更新账户：除凭据外的字段整体替换；凭据（以及 `apiKey`、`accessToken`）留空或原样传回打码值表示保留原值 |
 | DELETE | `/v0/management/plugins/newapi-meter/accounts` | query `id` | 删除账户 |
 | GET | `/v0/management/plugins/newapi-meter/overview` | query `force=1`，可选 `id` | 全部账户的页签数据；`force=1` 跳过缓存，同时带 `id` 时只有该账户跳过缓存 |
+| GET | `/v0/management/plugins/newapi-meter/detail` | query `id`，`period`，自定义时 `start`/`end`，可选 `force=1` | 单个内置账户在统计区间内的花费与用量，见下文 |
 
 新建 / 更新的 JSON 字段：
 
@@ -91,6 +102,14 @@ plugins:
 列表中的账户：`id`、`order`、`name`、`source`、`base_url`、`credential_masked`、`credential_kind`（`pat` / `legacy`）、`user_id`、`low_balance_threshold`、`proxy`、`custom_script`、`custom_placeholders`（`baseUrl`、`userId`、`apiKeyMasked`、`accessTokenMasked`）。完整凭据从不出现在任何响应或插件日志里。
 
 概况（`overview`）中每个账户的主要字段：`state`（`ok` / `low` / `partial` / `needs_action`）、`currency`（`code` 为 `USD`/`CNY`/`CUSTOM`/`TOKENS`，`symbol`）、`balance`、`total_used`、`today_spend`、`rpm`、`tpm`（读不到时为 `null`）、`low_balance_threshold`、`balance_failure` / `today_failure`（对应数字读不到的原因）、`primary_failure`（需处理时的主要原因）、`failures`（失败的接口）、`fetched_at`、`last_success_at`（CPA 本次运行中最近一次成功读取）、`cached`。顶层还有 `generated_at`、`today_start`（CPA 本机时区的今日零点）和 `timezone`。
+
+账户详情（`detail`）的参数：`period` 为 `today`（默认）、`yesterday`、`7d`、`30d` 或 `custom`；`custom` 时 `start` 和 `end` 是 CPA 本机时区的日期 `YYYY-MM-DD`（含首尾两天）。不合法时返回 400 `validation_failed`，`field` 为 `period` / `start` / `end`，`reason` 除通用的 `required`、`invalid`、`unsupported` 外还有 `swapped`（结束早于开始）、`too_long`（超过 365 天）、`future`（晚于今天）；自定义查询账户返回 `field: "id"`、`reason: "unsupported"`。今日区间（包括起止都是今天的自定义区间）直接复用概况的今日查询和缓存，不再访问站点；其他区间各自缓存 60 秒，`force=1` 跳过缓存。响应字段：
+
+- `period`：`preset`、`start_date`、`end_date`、`days`、`start` / `end`（RFC 3339，带 CPA 本机时区偏移；`end` 是最后一天之后的零点）、`granularity`（`hour` / `day`）、`includes_now`、`minutes`（平均 RPM/TPM 的分母）；顶层还有 `timezone`。
+- `currency`、`data_export`、`spend`（区间花费，来自 `/api/log/self/stat`）及 `spend_failure`。
+- `usage`：`spend`、`requests`、`tokens`、`avg_rpm`、`avg_tpm`、`models`（按花费从高到低，每项 `model`、`spend`、`share`、`requests`、`tokens`）、`buckets`（每个小时或每天一项：`start`，以及与 `models` 顺序对应的 `spend`、`requests`、`tokens` 数组）；读不到时为 `null`，原因在 `usage_failure`。
+- `usage_disabled`：站点未开启数据看板，此时 `usage` 和 `usage_failure` 都为 `null`。
+- `fetched_at`、`cached`。区间查询失败只出现在这些字段里，不影响概况中的账户状态。
 
 失败原因 `code`：`site_unreachable`（网络、DNS、TLS 错误或超时）、`legacy_token_retired`、`pat_scope_denied`、`credential_invalid`、`site_blocked`（站点返回 HTML 而不是 JSON）、`site_error`（5xx）、`bad_response`（其余无法使用的响应，包括 `success: false`）。`diagnostic` 是可以安全展示的诊断代码，例如 `ACCESS_TOKEN_LEGACY_RETIRED`、`HTTP_401`、`HTML_RESPONSE`、`NETWORK_TIMEOUT`。
 

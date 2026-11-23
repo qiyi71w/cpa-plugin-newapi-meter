@@ -73,6 +73,8 @@ type Reading struct {
 	TotalUsed  *float64 // user/self used_quota
 	TodayQuota *float64 // log/self/stat quota for today
 	RPM, TPM   *float64 // log/self/stat realtime values (last 60 s)
+	// Usage holds today's /api/data/self rows, so today's period reuses them.
+	Usage      []UsageRow
 	TodayStart time.Time
 	FetchedAt  time.Time
 }
@@ -150,10 +152,7 @@ func (s *Source) Fetch(ctx context.Context, a store.Account) Reading {
 		}
 	}
 	if fData == nil {
-		var rows []json.RawMessage
-		if json.Unmarshal(rowsData, &rows) != nil {
-			fData = missingFields()
-		}
+		r.Usage, fData = parseRows(rowsData)
 	}
 	r.Probes = []status.Probe{
 		{Name: EndpointStatus, Failure: fStatus},

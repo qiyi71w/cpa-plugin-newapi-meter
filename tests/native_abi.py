@@ -104,7 +104,7 @@ def main(path):
     assert mreg["resources"][0]["Menu"] == "余额用量 · NewAPI Meter"
     routes = {(r["Method"], r["Path"]) for r in mreg["routes"]}
     assert routes == {("GET", ROUTE + "/accounts"), ("POST", ROUTE + "/accounts"), ("PUT", ROUTE + "/accounts"),
-                      ("DELETE", ROUTE + "/accounts"), ("GET", ROUTE + "/overview")}, routes
+                      ("DELETE", ROUTE + "/accounts"), ("GET", ROUTE + "/overview"), ("GET", ROUTE + "/detail")}, routes
 
     status, headers, body = handle("GET", PAGE)
     assert status == 200 and headers["Content-Type"] == ["text/html; charset=utf-8"], (status, headers)
@@ -127,12 +127,16 @@ def main(path):
         assert status == 200 and PAT.encode() not in body
         item = json.loads(body)["accounts"][0]
         assert item["state"] == "ok" and item["balance"] == 10 and item["today_spend"] == 1, item
+        status, _, body = handle("GET", ROUTE + "/detail", {"id": [account_id], "period": ["today"]})
+        assert status == 200 and PAT.encode() not in body
+        detail = json.loads(body)
+        assert detail["spend"] == 1 and detail["cached"] and detail["period"]["granularity"] == "hour", detail
         if os.name != "nt":
             assert stat.S_IMODE(os.stat(data_dir).st_mode) == 0o700
             assert stat.S_IMODE(os.stat(os.path.join(data_dir, "accounts.json")).st_mode) == 0o600
         status, _, _ = handle("DELETE", ROUTE + "/accounts", {"id": [account_id]})
         assert status == 200
-        print("PASS management routes: create, masked list, overview against synthetic site, delete")
+        print("PASS management routes: create, masked list, overview and today's detail against synthetic site, delete")
     finally:
         site.shutdown()
 

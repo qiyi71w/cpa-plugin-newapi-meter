@@ -1,4 +1,4 @@
-import type { ApiErrorBody, Overview } from "./types";
+import type { AccountDetail, ApiErrorBody, Overview, PeriodChoice } from "./types";
 
 const PAGE_SUFFIX = "/v0/resource/plugins/newapi-meter/index.html";
 
@@ -71,4 +71,20 @@ export function getOverview(key: string, opts: OverviewOptions = {}): Promise<Ov
   if (opts.id) q.set("id", opts.id);
   const qs = q.toString();
   return request<Overview>(key, `/overview${qs ? `?${qs}` : ""}`);
+}
+
+export interface DetailQuery {
+  id: string;
+  period: PeriodChoice;
+  force?: boolean;
+}
+
+export function getDetail(key: string, q: DetailQuery): Promise<AccountDetail> {
+  const p = new URLSearchParams({ id: q.id, period: q.period.preset });
+  if (q.period.preset === "custom") {
+    p.set("start", q.period.start ?? "");
+    p.set("end", q.period.end ?? "");
+  }
+  if (q.force) p.set("force", "1");
+  return request<AccountDetail>(key, `/detail?${p.toString()}`);
 }
