@@ -69,3 +69,54 @@ export interface ApiErrorBody {
   reason?: string;
   path?: string;
 }
+
+export type Source = "newapi" | "custom";
+export type ProxyMode = "follow" | "direct";
+export type CredentialKind = "pat" | "legacy";
+
+/** An account as listed by GET /accounts: secrets only ever masked. */
+export interface AccountView {
+  id: string;
+  order: number;
+  name: string;
+  source: Source;
+  base_url: string;
+  credential_masked: string;
+  credential_kind: CredentialKind | "";
+  user_id: string;
+  low_balance_threshold: number | null;
+  proxy: ProxyMode;
+  custom_script: string;
+  custom_placeholders: { baseUrl: string; apiKeyMasked: string; accessTokenMasked: string; userId: string };
+}
+
+export interface AccountList {
+  accounts: AccountView[];
+  data_file: string;
+}
+
+/** Body of POST/PUT /accounts and POST /accounts/test. A blank credential
+ *  keeps (or, for a test, uses) the stored one of `id`. */
+export interface AccountInput {
+  name: string;
+  source: Source;
+  base_url: string;
+  credential: string;
+  user_id: string;
+  low_balance_threshold: number | null;
+  proxy: ProxyMode;
+}
+
+/** Answer of POST /accounts/test. */
+export interface ConnectionTest {
+  source: Source;
+  ok: boolean;
+  /** ok | partial | needs_action (never low: no threshold is applied) */
+  state: AccountState;
+  credential_kind: CredentialKind | "";
+  site_version: string;
+  currency: Currency | null;
+  data_export: boolean | null;
+  failure: Failure | null;
+  failures: Probe[];
+}

@@ -4,6 +4,11 @@ import { t, tDynamic } from "./i18n";
 import { Icon } from "./icons";
 import type { Failure, OverviewAccount } from "./types";
 
+export const MANAGE_BUTTON_ID = "nm-manage-open";
+
+/** Failures fixed by a new credential rather than by waiting. */
+const CREDENTIAL_FAILURES: Record<string, true> = { legacy_token_retired: true, pat_scope_denied: true, credential_invalid: true };
+
 function failureTitle(f: Failure | null | undefined): string {
   return f ? tDynamic(`failure.${f.code}`, f.code) : "";
 }
@@ -24,7 +29,7 @@ function RefreshButton(p: { refreshing: boolean; onRefresh: () => void; idle: st
   );
 }
 
-function Head(p: { a: OverviewAccount; nowMs: number; refreshing: boolean; onRefresh: () => void }) {
+function Head(p: { a: OverviewAccount; nowMs: number; refreshing: boolean; onRefresh: () => void; onManage: () => void }) {
   const { a } = p;
   // A failing account was still queried just now; when it last succeeded is in the alert.
   const when = a.fetched_at;
@@ -48,13 +53,18 @@ function Head(p: { a: OverviewAccount; nowMs: number; refreshing: boolean; onRef
           {when && <span title={stamp(when)}>{t(label, { when: ago(when, p.nowMs) })}</span>}
         </p>
       </div>
-      <RefreshButton
-        refreshing={p.refreshing}
-        onRefresh={p.onRefresh}
-        idle={t("detail.refresh")}
-        busy={t("detail.refreshing")}
-        hint={t("detail.refreshHint")}
-      />
+      <div class="nm-actions">
+        <RefreshButton
+          refreshing={p.refreshing}
+          onRefresh={p.onRefresh}
+          idle={t("detail.refresh")}
+          busy={t("detail.refreshing")}
+          hint={t("detail.refreshHint")}
+        />
+        <button type="button" id={MANAGE_BUTTON_ID} class="nm-btn" onClick={p.onManage}>
+          {t("manage.open")}
+        </button>
+      </div>
     </header>
   );
 }
@@ -133,7 +143,7 @@ function PartialNote(p: { a: OverviewAccount }) {
   );
 }
 
-function NeedsAction(p: { a: OverviewAccount; refreshing: boolean; onRetry: () => void }) {
+function NeedsAction(p: { a: OverviewAccount; refreshing: boolean; onRetry: () => void; onReplaceCredential: () => void }) {
   const { a } = p;
   if (a.unsupported_source) {
     return (
@@ -164,7 +174,16 @@ function NeedsAction(p: { a: OverviewAccount; refreshing: boolean; onRetry: () =
         )}
       </p>
       <div class="nm-actions">
-        <RefreshButton refreshing={p.refreshing} onRefresh={p.onRetry} idle={t("needs.retry")} busy={t("needs.retrying")} primary />
+        <button type="button" class={CREDENTIAL_FAILURES[code] ? "nm-btn nm-btn-primary" : "nm-btn"} onClick={p.onReplaceCredential}>
+          {t("needs.replaceCredential")}
+        </button>
+        <RefreshButton
+          refreshing={p.refreshing}
+          onRefresh={p.onRetry}
+          idle={t("needs.retry")}
+          busy={t("needs.retrying")}
+          primary={!CREDENTIAL_FAILURES[code]}
+        />
       </div>
     </div>
   );
@@ -177,13 +196,15 @@ export function Detail(p: {
   retrying: boolean;
   onRefresh: () => void;
   onRetry: () => void;
+  onManage: () => void;
+  onReplaceCredential: () => void;
 }) {
   const { a } = p;
   return (
     <>
-      <Head a={a} nowMs={p.nowMs} refreshing={p.refreshing} onRefresh={p.onRefresh} />
+      <Head a={a} nowMs={p.nowMs} refreshing={p.refreshing} onRefresh={p.onRefresh} onManage={p.onManage} />
       {a.state === "needs_action" ? (
-        <NeedsAction a={a} refreshing={p.retrying || p.refreshing} onRetry={p.onRetry} />
+        <NeedsAction a={a} refreshing={p.retrying || p.refreshing} onRetry={p.onRetry} onReplaceCredential={p.onReplaceCredential} />
       ) : (
         <>
           <Metrics a={a} />

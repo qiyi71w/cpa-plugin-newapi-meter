@@ -239,6 +239,7 @@ var Routes = []route{
 	{"PUT", RoutePrefix + "/accounts"},
 	{"DELETE", RoutePrefix + "/accounts"},
 	{"GET", RoutePrefix + "/overview"},
+	{"POST", RoutePrefix + "/accounts/test"},
 }
 
 func registration() any {

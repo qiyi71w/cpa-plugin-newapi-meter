@@ -340,3 +340,39 @@ func (r Reading) Succeeded() bool {
 	}
 	return false
 }
+
+// Check is the outcome of a connection test: what the site tells about an
+// account that may not be saved yet.
+type Check struct {
+	CredentialKind string
+	// SiteVersion and Currency are empty/nil when /api/status failed.
+	SiteVersion string
+	Currency    *Currency
+	DataExport  *bool
+	// State is the account status the reading would give, judged without a
+	// threshold (so never Low).
+	State status.State
+	// Failure is the most actionable failure, nil when every counted query
+	// answered; Failures lists each failed query.
+	Failure  *status.Failure
+	Failures []status.Probe
+}
+
+// Check queries the site once for a, bypassing any cache, and judges the
+// result with the same rules as the account status.
+func (s *Source) Check(ctx context.Context, a store.Account) Check {
+	r := s.Fetch(ctx, a)
+	sum := Summarize(r, nil)
+	c := Check{
+		CredentialKind: r.CredentialKind,
+		Currency:       sum.Currency,
+		DataExport:     sum.DataExport,
+		State:          sum.State,
+		Failure:        status.Primary(sum.Failures),
+		Failures:       sum.Failures,
+	}
+	if r.Site != nil {
+		c.SiteVersion = r.Site.Version
+	}
+	return c
+}

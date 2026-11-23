@@ -1,4 +1,4 @@
-import type { ApiErrorBody, Overview } from "./types";
+import type { AccountInput, AccountList, AccountView, ApiErrorBody, ConnectionTest, Overview } from "./types";
 
 const PAGE_SUFFIX = "/v0/resource/plugins/newapi-meter/index.html";
 
@@ -22,11 +22,15 @@ export class ApiError extends Error {
 /** The request never reached CPA (offline, CPA stopped). */
 export class NetworkError extends Error {}
 
-async function request<T>(key: string, path: string): Promise<T> {
+async function request<T>(key: string, path: string, init?: { method: string; body?: unknown }): Promise<T> {
   let res: Response;
   try {
+    const headers: Record<string, string> = { Authorization: `Bearer ${key}`, Accept: "application/json" };
+    if (init?.body !== undefined) headers["Content-Type"] = "application/json";
     res = await fetch(routeBase() + path, {
-      headers: { Authorization: `Bearer ${key}`, Accept: "application/json" },
+      method: init?.method ?? "GET",
+      headers,
+      body: init?.body === undefined ? undefined : JSON.stringify(init.body),
       cache: "no-store",
       credentials: "omit",
     });
@@ -48,6 +52,7 @@ async function request<T>(key: string, path: string): Promise<T> {
         body = {
           code: err.code,
           field: "field" in err && typeof err.field === "string" ? err.field : undefined,
+          reason: "reason" in err && typeof err.reason === "string" ? err.reason : undefined,
           path: "path" in err && typeof err.path === "string" ? err.path : undefined,
         };
       }
@@ -71,4 +76,25 @@ export function getOverview(key: string, opts: OverviewOptions = {}): Promise<Ov
   if (opts.id) q.set("id", opts.id);
   const qs = q.toString();
   return request<Overview>(key, `/overview${qs ? `?${qs}` : ""}`);
+}
+
+export function listAccounts(key: string): Promise<AccountList> {
+  return request<AccountList>(key, "/accounts");
+}
+
+export async function createAccount(key: string, input: AccountInput): Promise<AccountView> {
+  return (await request<{ account: AccountView }>(key, "/accounts", { method: "POST", body: input })).account;
+}
+
+export async function updateAccount(key: string, id: string, input: AccountInput): Promise<AccountView> {
+  return (await request<{ account: AccountView }>(key, "/accounts", { method: "PUT", body: { id, ...input } })).account;
+}
+
+export async function deleteAccount(key: string, id: string): Promise<void> {
+  await request<unknown>(key, `/accounts?${new URLSearchParams({ id })}`, { method: "DELETE" });
+}
+
+/** Tries unsaved form values once; with `id`, a blank credential means the stored one. Never saves. */
+export function testConnection(key: string, input: AccountInput, id?: string): Promise<ConnectionTest> {
+  return request<ConnectionTest>(key, "/accounts/test", { method: "POST", body: id ? { id, ...input } : input });
 }

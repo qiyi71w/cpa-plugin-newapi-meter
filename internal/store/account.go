@@ -114,6 +114,57 @@ func apply(in Input, prev *Account) (Account, error) {
 	if out.Name == "" {
 		return Account{}, &ValidationError{"name", ReasonRequired}
 	}
+	if err := resolveQuery(&out, in, prev); err != nil {
+		return Account{}, err
+	}
+	if t := out.LowBalanceThreshold; t != nil {
+		if math.IsNaN(*t) || math.IsInf(*t, 0) {
+			return Account{}, &ValidationError{"low_balance_threshold", ReasonInvalid}
+		}
+		if *t < 0 {
+			return Account{}, &ValidationError{"low_balance_threshold", ReasonNegative}
+		}
+		v := *t
+		out.LowBalanceThreshold = &v
+	}
+	if err := resolveProxy(&out); err != nil {
+		return Account{}, err
+	}
+	return out, nil
+}
+
+// Resolve validates the fields that decide how an account is queried
+// (source, site address, credential, user ID, proxy) and merges them with
+// the stored account prev (nil for an unsaved one): a blank or masked
+// credential means the stored credential. It never touches the data file
+// and does not check the name or the low-balance threshold, so a form can be
+// tried before it is complete.
+func Resolve(in Input, prev *Account) (Account, error) {
+	out := Account{
+		Source:       in.Source,
+		UserID:       strings.TrimSpace(in.UserID),
+		Proxy:        in.Proxy,
+		CustomScript: in.CustomScript,
+		CustomPlaceholders: Placeholders{
+			BaseURL:     strings.TrimSpace(in.CustomPlaceholders.BaseURL),
+			APIKey:      strings.TrimSpace(in.CustomPlaceholders.APIKey),
+			AccessToken: strings.TrimSpace(in.CustomPlaceholders.AccessToken),
+			UserID:      strings.TrimSpace(in.CustomPlaceholders.UserID),
+		},
+	}
+	if err := resolveQuery(&out, in, prev); err != nil {
+		return Account{}, err
+	}
+	if err := resolveProxy(&out); err != nil {
+		return Account{}, err
+	}
+	return out, nil
+}
+
+// resolveQuery dispatches on the data source and checks the fields that
+// source queries with, taking blank secrets from prev. apply and Resolve
+// share it so a saved account and a tried one follow the same rules.
+func resolveQuery(out *Account, in Input, prev *Account) error {
 	if out.Source == "" {
 		out.Source = SourceNewAPI
 	}
@@ -122,13 +173,13 @@ func apply(in Input, prev *Account) (Account, error) {
 	case SourceCustom:
 		// The record format already holds custom-query fields; this build has
 		// no custom-query runtime, so it does not accept such accounts yet.
-		return Account{}, &ValidationError{"source", ReasonUnsupported}
+		return &ValidationError{"source", ReasonUnsupported}
 	default:
-		return Account{}, &ValidationError{"source", ReasonInvalid}
+		return &ValidationError{"source", ReasonInvalid}
 	}
 	base, err := NormalizeBaseURL(in.BaseURL)
 	if err != nil {
-		return Account{}, err
+		return err
 	}
 	out.BaseURL = base
 
@@ -141,32 +192,26 @@ func apply(in Input, prev *Account) (Account, error) {
 		keepSecret(&out.CustomPlaceholders.AccessToken, prev.CustomPlaceholders.AccessToken)
 	}
 	if out.Credential == "" {
-		return Account{}, &ValidationError{"credential", ReasonRequired}
+		return &ValidationError{"credential", ReasonRequired}
 	}
 	if !out.IsPAT() && out.UserID == "" {
-		return Account{}, &ValidationError{"user_id", ReasonRequired}
+		return &ValidationError{"user_id", ReasonRequired}
 	}
 	if out.UserID != "" && !isDigits(out.UserID) {
-		return Account{}, &ValidationError{"user_id", ReasonNotNumeric}
+		return &ValidationError{"user_id", ReasonNotNumeric}
 	}
-	if t := out.LowBalanceThreshold; t != nil {
-		if math.IsNaN(*t) || math.IsInf(*t, 0) {
-			return Account{}, &ValidationError{"low_balance_threshold", ReasonInvalid}
-		}
-		if *t < 0 {
-			return Account{}, &ValidationError{"low_balance_threshold", ReasonNegative}
-		}
-		v := *t
-		out.LowBalanceThreshold = &v
-	}
+	return nil
+}
+
+func resolveProxy(out *Account) error {
 	switch out.Proxy {
 	case "":
 		out.Proxy = ProxyFollow
 	case ProxyFollow, ProxyDirect:
 	default:
-		return Account{}, &ValidationError{"proxy", ReasonInvalid}
+		return &ValidationError{"proxy", ReasonInvalid}
 	}
-	return out, nil
+	return nil
 }
 
 func keepSecret(dst *string, prev string) {

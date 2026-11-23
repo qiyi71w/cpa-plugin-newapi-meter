@@ -57,6 +57,8 @@ func (p *Plugin) handle(raw []byte) managementResponse {
 		return p.deleteAccount(req.Query.Get("id"))
 	case "GET " + RoutePrefix + "/overview":
 		return p.overview(ctx, req.Query)
+	case "POST " + RoutePrefix + "/accounts/test":
+		return p.testConnection(ctx, req.Body)
 	}
 	return apiError(http.StatusNotFound, errorBody{Code: "not_found"})
 }
@@ -376,4 +378,62 @@ func hostOf(base string) string {
 		return base
 	}
 	return u.Host
+}
+
+// connectionTest is the answer of POST .../accounts/test.
+type connectionTest struct {
+	Source store.Source `json:"source"`
+	// OK: every query that counts answered.
+	OK             bool             `json:"ok"`
+	State          status.State     `json:"state"`
+	CredentialKind string           `json:"credential_kind"`
+	SiteVersion    string           `json:"site_version"`
+	Currency       *newapi.Currency `json:"currency"`
+	DataExport     *bool            `json:"data_export"`
+	Failure        *status.Failure  `json:"failure"`
+	Failures       []status.Probe   `json:"failures"`
+}
+
+// testConnection serves POST .../accounts/test: it queries the site once with
+// unsaved form values. With "id", blank or masked secrets mean that account's
+// stored ones. Nothing is cached and the data file is only read, never written.
+func (p *Plugin) testConnection(ctx context.Context, body []byte) managementResponse {
+	var in struct {
+		ID string `json:"id"`
+		store.Input
+	}
+	if err := json.Unmarshal(body, &in); err != nil {
+		return apiError(http.StatusBadRequest, errorBody{Code: "invalid_json"})
+	}
+	var prev *store.Account
+	if in.ID != "" {
+		s, err := p.currentStore()
+		if err != nil {
+			return p.storeFailure(err)
+		}
+		a, err := s.Get(in.ID)
+		if err != nil {
+			return p.storeFailure(err)
+		}
+		prev = &a
+	}
+	a, err := store.Resolve(in.Input, prev)
+	if err != nil {
+		return p.storeFailure(err)
+	}
+	out := connectionTest{Source: a.Source, Failures: []status.Probe{}}
+	switch a.Source {
+	case store.SourceNewAPI:
+		c := p.source.Check(ctx, a)
+		out.OK, out.State, out.CredentialKind = c.Failure == nil, c.State, c.CredentialKind
+		out.SiteVersion, out.Currency, out.DataExport = c.SiteVersion, c.Currency, c.DataExport
+		out.Failure = c.Failure
+		if c.Failures != nil {
+			out.Failures = c.Failures
+		}
+	default:
+		// store.Resolve accepts only sources this build can query.
+		return apiError(http.StatusBadRequest, errorBody{Code: "validation_failed", Field: "source", Reason: store.ReasonUnsupported})
+	}
+	return jsonResponse(http.StatusOK, out)
 }

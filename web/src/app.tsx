@@ -1,14 +1,18 @@
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { ApiError, getOverview, type OverviewOptions } from "./api";
 import { readSavedKey } from "./auth";
 import { PANEL_ID, TabBand, tabId } from "./band";
-import { Detail } from "./detail";
+import { Detail, MANAGE_BUTTON_ID } from "./detail";
 import { t } from "./i18n";
+import { Manage, type ManageTarget } from "./manage";
 import { defaultSelection } from "./model";
-import { Empty, KeyPrompt, Loading, LoadError } from "./states";
+import { Empty, EMPTY_ADD_ID, KeyPrompt, Loading, LoadError } from "./states";
 import type { Overview } from "./types";
 
 type Phase = { kind: "loading" } | { kind: "key"; rejected: boolean } | { kind: "error"; error: unknown } | { kind: "ready" };
+
+/** The dashboard, or the manage-accounts view in its place. */
+type View = { kind: "dashboard" } | { kind: "manage"; target: ManageTarget };
 
 /** Re-render periodically so relative times ("3 分钟前") stay current. */
 function useNow(intervalMs: number): number {
@@ -32,6 +36,11 @@ export function App() {
   const [refreshFailed, setRefreshFailed] = useState(false);
   const lastShown = useRef<string | null>(null);
   const nowMs = useNow(15_000);
+  const [view, setView] = useState<View>({ kind: "dashboard" });
+  // An account was deleted while managing: the dashboard reloads on return.
+  const stale = useRef(false);
+  // Element to focus once the dashboard is back.
+  const returnFocus = useRef<string | null>(null);
 
   const load = async (opts: OverviewOptions) => {
     if (!key.current) {
@@ -47,8 +56,7 @@ export function App() {
       setPhase({ kind: "ready" });
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) {
-        key.current = null;
-        setPhase({ kind: "key", rejected: true });
+        unauthorized();
       } else if (hasData.current && !(e instanceof ApiError && e.body?.code?.startsWith("data_file_"))) {
         setRefreshFailed(true);
       } else {
@@ -63,13 +71,60 @@ export function App() {
     setBusy(null);
   };
 
+  useLayoutEffect(() => {
+    const want = returnFocus.current;
+    if (view.kind !== "dashboard" || !want || busy) return;
+    // Back to where the user left, or to the empty state's entry when no account is left.
+    const el = document.getElementById(want) ?? document.getElementById(EMPTY_ADD_ID);
+    if (!el) return;
+    el.focus();
+    returnFocus.current = null;
+  });
+
+  const manage = (target: ManageTarget) => setView({ kind: "manage", target });
+
+  /** Back from managing; a saved account becomes the selected tab. */
+  const leaveManage = async (savedId?: string) => {
+    setView({ kind: "dashboard" });
+    returnFocus.current = savedId ? tabId(savedId) : MANAGE_BUTTON_ID;
+    if (savedId) setSelected(savedId);
+    const changed = !!savedId || stale.current;
+    stale.current = false;
+    if (!changed) return;
+    // A first account has no tab yet: show loading rather than the empty state.
+    if (!data || data.accounts.length === 0) setPhase({ kind: "loading" });
+    setBusy({ all: true });
+    await load({});
+    setBusy(null);
+  };
+
+  const unauthorized = () => {
+    key.current = null;
+    setView({ kind: "dashboard" });
+    setPhase({ kind: "key", rejected: true });
+  };
+
   useEffect(() => {
     document.title = t("page.title");
     if (key.current) void load({});
   }, []);
 
   let body;
-  if (phase.kind === "loading") {
+  if (view.kind === "manage" && phase.kind === "ready" && key.current) {
+    body = (
+      <Manage
+        apiKey={key.current}
+        target={view.target}
+        overview={data?.accounts ?? []}
+        onTarget={manage}
+        onLeave={(id) => void leaveManage(id)}
+        onChanged={() => {
+          stale.current = true;
+        }}
+        onUnauthorized={unauthorized}
+      />
+    );
+  } else if (phase.kind === "loading") {
     body = <Loading />;
   } else if (phase.kind === "key") {
     body = (
@@ -93,7 +148,7 @@ export function App() {
       />
     );
   } else if (!data || data.accounts.length === 0) {
-    body = <Empty />;
+    body = <Empty onAdd={() => manage({ kind: "form", id: null, back: "dashboard" })} />;
   } else {
     const account = data.accounts.find((a) => a.id === selected) ?? data.accounts[0];
     // The panel fades up only when the user moves to another account.
@@ -116,6 +171,8 @@ export function App() {
               retrying={busy !== null && "id" in busy && busy.id === account.id}
               onRefresh={() => void refresh({ all: true })}
               onRetry={() => void refresh({ id: account.id })}
+              onManage={() => manage({ kind: "list" })}
+              onReplaceCredential={() => manage({ kind: "form", id: account.id, focusCredential: true, back: "dashboard" })}
             />
           </div>
         </section>

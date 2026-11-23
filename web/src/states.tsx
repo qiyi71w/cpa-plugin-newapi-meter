@@ -23,11 +23,19 @@ export function Loading() {
   );
 }
 
-export function Empty() {
+export const EMPTY_ADD_ID = "nm-empty-add";
+
+export function Empty(p: { onAdd: () => void }) {
   return (
     <section class="nm-empty">
       <h2 class="nm-empty-title">{t("empty.title")}</h2>
       <p class="nm-empty-text">{t("empty.text")}</p>
+      <div class="nm-actions">
+        <button type="button" id={EMPTY_ADD_ID} class="nm-btn nm-btn-primary" onClick={p.onAdd}>
+          <Icon name="plus" />
+          {t("empty.add")}
+        </button>
+      </div>
     </section>
   );
 }

@@ -16,12 +16,42 @@ CPA（CLIProxyAPI）原生插件。在 CPA WebUI 或 EasyCLIProxyAPI 的插件�
 - 账户状态：正常、余额偏低、部分可用（部分数据读不到，例如余额被站点防护拦截）、需处理（凭据相关的查询全部失败），并给出失败原因和下一步。
 - 今日按 **CPA 所在机器的本地时区**从零点算起。
 
-账户目前通过下文的管理路由增删改；页面内的账户管理界面、统计区间与图表、自定义查询、跟随 CPA 代理会在后续版本加入。在那之前，所有账户都直连站点（不使用任何代理，包括环境变量里的代理）。
+账户在页面内的「管理账户」里添加、编辑和删除（见下文），也可以直接调用管理路由。统计区间与图表、自定义查询、跟随 CPA 代理会在后续版本加入。在那之前，所有账户都直连站点（不使用任何代理，包括环境变量里的代理）。
 
 ## 所需权限
 
 - **PAT**：创建时勾选 `profile:read` 和 `usage:read`。不需要 `wallet:read`。
 - **旧版访问令牌**：站点个人设置中的系统访问令牌，必须同时填写账户的数字用户 ID。站点升级到新版鉴权后，旧版访问令牌会在过渡期结束时失效，届时页面会提示改用 PAT。
+
+## 添加账户
+
+1. 打开「余额用量 · NewAPI Meter」。还没有账户时，点空状态里的「添加账户」；已有账户时，点账户详情标题行的「管理账户」，再点「添加账户」。
+2. 填写表单：
+   - **名称**：显示在页签上，用来区分账户。
+   - **数据来源**：选「内置 new-api」。
+   - **站点地址**：站点首页的地址，例如 `https://newapi.example.com`。只支持 http 和 https，末尾的斜杠会被去掉。
+   - **账户凭据**：PAT（`nap_` 开头）或旧版访问令牌。页面会提示识别出的类型。
+   - **用户 ID**：只在填旧版访问令牌时出现，必填，是站点个人设置里显示的数字 ID。
+   - **余额阈值**（可选）：余额低于它时，账户显示为余额偏低。单位是这个账户的显示货币，测试连接后会显示出来。
+   - **代理**：「跟随 CPA 代理」或「直连」。
+3. 点「测试连接」。插件用表单里还没保存的值向站点查询一次，显示识别出的凭据类型、站点版本和显示货币，或者具体的失败原因和下一步。测试不会保存任何东西。
+4. 点「添加账户」保存。页面回到仪表盘，新账户出现在页签带里。
+
+编辑账户时，凭据只显示打码值；凭据框留空表示继续使用已保存的凭据，测试连接也会用它。需处理的账户在详情里有「替换凭据」，直接打开这个账户的编辑表单。删除账户前会弹出写明账户名的确认；删除只影响插件的数据文件，不影响站点上的账户。
+
+### 测试连接的失败说明
+
+| 结果 | 含义 | 下一步 |
+|---|---|---|
+| 站点无法访问 | 网络、DNS、TLS 错误或超时 | 检查站点地址和网络连接，然后重试 |
+| 旧版访问令牌已失效 | 站点已升级到新版鉴权，旧版访问令牌过了过渡期 | 在站点个人设置里创建 PAT（勾选 `profile:read` 和 `usage:read`），替换凭据 |
+| PAT 权限不足 | PAT 缺少 `profile:read` 或 `usage:read` | 重新创建勾选这两项的 PAT，替换凭据 |
+| 凭据无效 | 站点拒绝了凭据（401 等） | 确认凭据和用户 ID 无误，或在站点重新生成后替换 |
+| 站点防护拦截 | 站点返回了网页验证（HTML），而不是数据 | 插件不会绕过站点防护；请站点放行这些接口，或稍后重试 |
+| 站点出错 | 站点返回 5xx | 稍后重试 |
+| 响应异常 | 返回了无法识别的数据 | 确认这是受支持的 new-api 站点后重试 |
+
+如果只是部分接口失败（例如余额接口被站点防护拦截，花费正常），测试结果会列出读不到的部分；这样的账户保存后显示为部分可用。站点没有开启数据看板时测试仍算成功，结果里会注明保存后看不到按模型用量。
 
 ## 从源码构建
 
@@ -29,7 +59,7 @@ CPA（CLIProxyAPI）原生插件。在 CPA WebUI 或 EasyCLIProxyAPI 的插件�
 
 ```bash
 bun run typecheck                 # 前端类型检查
-bun run test:web                  # 前端单元测试（Management Key 的三种存储格式）
+bun run test:web                  # 前端单元测试（Management Key 的三种存储格式、账户表单校验）
 go test ./...                     # Go 测试（合成的假站点，不访问网络）
 bun run build                     # 先构建页面，再构建插件
 python3 tests/native_abi.py dist/linux/amd64/newapi-meter.so   # 加载真实产物的 C ABI 冒烟
@@ -71,6 +101,7 @@ plugins:
 | PUT | `/v0/management/plugins/newapi-meter/accounts` | JSON 账户 + `id` | 更新账户：除凭据外的字段整体替换；凭据（以及 `apiKey`、`accessToken`）留空或原样传回打码值表示保留原值 |
 | DELETE | `/v0/management/plugins/newapi-meter/accounts` | query `id` | 删除账户 |
 | GET | `/v0/management/plugins/newapi-meter/overview` | query `force=1`，可选 `id` | 全部账户的页签数据；`force=1` 跳过缓存，同时带 `id` 时只有该账户跳过缓存 |
+| POST | `/v0/management/plugins/newapi-meter/accounts/test` | JSON 账户，可选 `id` | 测试连接：用尚未保存的值向站点查询一次，不缓存、不写数据文件；带 `id` 时凭据留空或传回打码值表示用该账户已保存的凭据 |
 
 新建 / 更新的 JSON 字段：
 
@@ -91,6 +122,8 @@ plugins:
 列表中的账户：`id`、`order`、`name`、`source`、`base_url`、`credential_masked`、`credential_kind`（`pat` / `legacy`）、`user_id`、`low_balance_threshold`、`proxy`、`custom_script`、`custom_placeholders`（`baseUrl`、`userId`、`apiKeyMasked`、`accessTokenMasked`）。完整凭据从不出现在任何响应或插件日志里。
 
 概况（`overview`）中每个账户的主要字段：`state`（`ok` / `low` / `partial` / `needs_action`）、`currency`（`code` 为 `USD`/`CNY`/`CUSTOM`/`TOKENS`，`symbol`）、`balance`、`total_used`、`today_spend`、`rpm`、`tpm`（读不到时为 `null`）、`low_balance_threshold`、`balance_failure` / `today_failure`（对应数字读不到的原因）、`primary_failure`（需处理时的主要原因）、`failures`（失败的接口）、`fetched_at`、`last_success_at`（CPA 本次运行中最近一次成功读取）、`cached`。顶层还有 `generated_at`、`today_start`（CPA 本机时区的今日零点）和 `timezone`。
+
+测试连接（`accounts/test`）返回：`source`、`ok`（所有计入的查询都成功）、`state`（`ok` / `partial` / `needs_action`，不做余额阈值判断）、`credential_kind`、`site_version`、`currency`、`data_export`、`failure`（最需要处理的失败，成功时为 `null`）、`failures`（失败的接口）。请求体的校验规则与保存相同，但不检查 `name` 和 `low_balance_threshold`；校验失败返回 400 `validation_failed`，`id` 不存在返回 404 `account_not_found`。
 
 失败原因 `code`：`site_unreachable`（网络、DNS、TLS 错误或超时）、`legacy_token_retired`、`pat_scope_denied`、`credential_invalid`、`site_blocked`（站点返回 HTML 而不是 JSON）、`site_error`（5xx）、`bad_response`（其余无法使用的响应，包括 `success: false`）。`diagnostic` 是可以安全展示的诊断代码，例如 `ACCESS_TOKEN_LEGACY_RETIRED`、`HTTP_401`、`HTML_RESPONSE`、`NETWORK_TIMEOUT`。
 

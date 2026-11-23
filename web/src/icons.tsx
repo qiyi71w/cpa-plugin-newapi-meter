@@ -5,6 +5,8 @@ const PATHS = {
   left: ["M14.5 6l-6 6 6 6"],
   right: ["M9.5 6l6 6-6 6"],
   alert: ["M12 3.5a8.5 8.5 0 1 0 0 17 8.5 8.5 0 0 0 0-17z", "M12 7.75v5.25", "M12 16.25v.01"],
+  plus: ["M12 5.5v13", "M5.5 12h13"],
+  check: ["M5.5 12.5l4.25 4.25L18.5 7.5"],
 } as const;
 
 export type IconName = keyof typeof PATHS;
