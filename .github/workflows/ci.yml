@@ -20,6 +20,10 @@ env:
   GO_VERSION: "1.25"
   BUN_VERSION: "1.3.14"
   PYTHON_VERSION: "3.13"
+  # windows/arm64 cgo needs an aarch64 mingw C compiler; the runner image's gcc is x86_64.
+  LLVM_MINGW: llvm-mingw-20261117-ucrt-aarch64
+  LLVM_MINGW_URL: https://github.com/mstorsjo/llvm-mingw/releases/download/20261117/llvm-mingw-20261117-ucrt-aarch64.zip
+  LLVM_MINGW_SHA256: c7f56de1d7aca15196c19083a799205390397b8b87a825aec3485e1e4f3c2cdd
 
 defaults:
   run:
@@ -74,7 +78,7 @@ jobs:
           - { goos: linux, goarch: amd64, ext: so, arch: x64, runner: ubuntu-24.04 }
           - { goos: linux, goarch: arm64, ext: so, arch: arm64, runner: ubuntu-24.04-arm }
           - { goos: windows, goarch: amd64, ext: dll, arch: x64, runner: windows-2025 }
-          - { goos: windows, goarch: arm64, ext: dll, arch: arm64, runner: windows-11-arm }
+          - { goos: windows, goarch: arm64, ext: dll, arch: arm64, runner: windows-11-arm, llvm_mingw: true }
           - { goos: darwin, goarch: amd64, ext: dylib, arch: x64, runner: macos-15-intel }
           - { goos: darwin, goarch: arm64, ext: dylib, arch: arm64, runner: macos-15 }
     env:
@@ -98,10 +102,22 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           architecture: ${{ matrix.arch }}
+      - name: Install llvm-mingw (aarch64 C compiler for cgo)
+        if: matrix.llvm_mingw
+        shell: pwsh
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          $zip = Join-Path $env:RUNNER_TEMP "$env:LLVM_MINGW.zip"
+          Invoke-WebRequest -Uri $env:LLVM_MINGW_URL -OutFile $zip
+          if ((Get-FileHash -Algorithm SHA256 $zip).Hash -ne $env:LLVM_MINGW_SHA256) { throw "llvm-mingw sha256 mismatch" }
+          & "$env:SystemRoot\System32\tar.exe" -xf $zip -C $env:RUNNER_TEMP
+          if ($LASTEXITCODE -ne 0) { throw "extracting llvm-mingw failed" }
+          Join-Path $env:RUNNER_TEMP "$env:LLVM_MINGW\bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+          "CC=aarch64-w64-mingw32-clang" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
       - name: Require a native toolchain (no cross-compiling)
         run: |
           host="$(go env GOHOSTOS)/$(go env GOHOSTARCH)"
-          echo "go host $host, target $GOOS/$GOARCH, python $(python -c 'import platform; print(platform.machine())')"
+          echo "go host $host, target $GOOS/$GOARCH, cc $(go env CC), python $(python -c 'import platform; print(platform.machine())')"
           test "$host" = "$GOOS/$GOARCH"
       - run: bun install --frozen-lockfile
       - run: bun run build
