@@ -1,0 +1,57 @@
+import { locale, t } from "./i18n";
+import type { Currency } from "./types";
+
+const compactFmt = new Intl.NumberFormat(locale, { notation: "compact", maximumFractionDigits: 1 });
+const rateFmt = new Intl.NumberFormat(locale, { maximumFractionDigits: 1 });
+const moneyFmts = new Map<number, Intl.NumberFormat>();
+
+function moneyFmt(maxDigits: number): Intl.NumberFormat {
+  let f = moneyFmts.get(maxDigits);
+  if (!f) {
+    f = new Intl.NumberFormat(locale, { minimumFractionDigits: 2, maximumFractionDigits: maxDigits });
+    moneyFmts.set(maxDigits, f);
+  }
+  return f;
+}
+
+export function compact(v: number): string {
+  return compactFmt.format(v);
+}
+
+/** An amount in the account's display currency; "—" when unknown. */
+export function money(v: number | null | undefined, c: Currency | null | undefined): string {
+  if (v == null || !Number.isFinite(v) || !c) return "—";
+  if (c.code === "TOKENS") return `${compact(v)} tokens`;
+  const abs = Math.abs(v);
+  // Small amounts keep enough digits to stay distinguishable from zero.
+  const digits = abs >= 1 || abs === 0 ? 2 : abs >= 0.01 ? 4 : 6;
+  return `${v < 0 ? "-" : ""}${c.symbol}${moneyFmt(digits).format(abs)}`;
+}
+
+export function rate(v: number | null | undefined): string {
+  return v == null ? "—" : rateFmt.format(v);
+}
+
+export function sameCurrency(a: Currency | null, b: Currency | null): boolean {
+  return !!a && !!b && a.code === b.code && a.symbol === b.symbol;
+}
+
+const rtf = new Intl.RelativeTimeFormat(locale, { numeric: "auto" });
+
+/** "刚刚" / "3 分钟前" style age of an ISO timestamp. */
+export function ago(iso: string, nowMs: number): string {
+  const s = Math.max(0, Math.round((nowMs - Date.parse(iso)) / 1000));
+  if (s < 45) return t("time.justNow");
+  const m = Math.round(s / 60);
+  if (m < 60) return rtf.format(-m, "minute");
+  const h = Math.round(m / 60);
+  if (h < 24) return rtf.format(-h, "hour");
+  return rtf.format(-Math.round(h / 24), "day");
+}
+
+const stampFmt = new Intl.DateTimeFormat(locale, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+
+/** Absolute local date and time for tooltips and "last success" lines. */
+export function stamp(iso: string): string {
+  return stampFmt.format(new Date(iso));
+}
