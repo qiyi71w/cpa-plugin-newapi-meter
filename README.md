@@ -83,6 +83,8 @@ plugins:
 | darwin/amd64（Intel） | 仅经 CI 验证 |
 | darwin/arm64（Apple Silicon） | 仅经 CI 验证 |
 
+系统要求：Linux 需要 glibc 2.34 及以上（CPA 官方 Docker 镜像满足；不支持 musl，例如 Alpine）；macOS 需要 12 及以上；Windows 版只依赖系统自带的 KERNEL32 和通用 C 运行库（UCRT，Windows 10 起自带）。
+
 ## 所需权限
 
 - **PAT**：创建时勾选 `profile:read` 和 `usage:read`。不需要 `wallet:read`。
