@@ -340,9 +340,11 @@ func TestRestoredFileIsRestrictedBeforeRead(t *testing.T) {
 	}
 }
 
-// The default directory belongs to the plugin: it is restricted to 0700 (as
-// is a restored file, to 0600) instead of being refused, also when it is
-// loosened while CPA runs.
+// The default directory belongs to the plugin: it is exactly 0700 as soon as
+// OpenDefault returns, before any operation, and every operation puts it
+// back to 0700 whether it was loosened (0750, 0755) or lost owner bits
+// (0500), so saving keeps working. A restored file is restricted to 0600
+// before it is read.
 func TestDefaultDirIsKeptOwnerOnly(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix permission bits")
@@ -359,20 +361,40 @@ func TestDefaultDirIsKeptOwnerOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if d := perm(t, dir); d != 0o700 {
+		t.Fatalf("default dir %#o right after OpenDefault, want 0700", d)
+	}
 	if list, err := s.List(); err != nil || len(list) != 1 {
 		t.Fatalf("list = %+v %v", list, err)
 	}
 	if d, f := perm(t, dir), perm(t, s.Path()); d != 0o700 || f != 0o600 {
 		t.Fatalf("dir %#o file %#o, want 0700/0600", d, f)
 	}
-	if err := os.Chmod(dir, 0o750); err != nil {
+	for _, mode := range []os.FileMode{0o750, 0o755, 0o500} {
+		if err := os.Chmod(dir, mode); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Create(patInput("after " + mode.String())); err != nil {
+			_ = os.Chmod(dir, 0o700)
+			t.Fatalf("save with default dir %#o: %v", mode, err)
+		}
+		if d := perm(t, dir); d != 0o700 {
+			t.Fatalf("default dir %#o after an operation from %#o, want 0700", d, mode)
+		}
+	}
+	if list, err := s.List(); err != nil || len(list) != 4 {
+		t.Fatalf("list = %d %v, want 4", len(list), err)
+	}
+
+	// A default dir that lost owner bits before CPA started is fixed at open.
+	if err := os.Chmod(dir, 0o500); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.List(); err != nil {
+	if _, err := OpenDefault(); err != nil {
 		t.Fatal(err)
 	}
 	if d := perm(t, dir); d != 0o700 {
-		t.Fatalf("loosened default dir %#o, want 0700", d)
+		t.Fatalf("default dir %#o after OpenDefault from 0500, want 0700", d)
 	}
 }
 

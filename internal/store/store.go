@@ -122,9 +122,9 @@ func Open(dir string) (*Store, error) {
 	return &Store{dir: dir, path: filepath.Join(dir, FileName)}, nil
 }
 
-// OpenDefault opens DefaultDir. Every operation keeps it 0700, even when it
-// already existed or was loosened later, because that directory belongs to
-// the plugin alone.
+// OpenDefault opens DefaultDir and sets it to exactly 0700 right away, and
+// every operation keeps it so, even when it already existed or was changed
+// later, because that directory belongs to the plugin alone.
 func OpenDefault() (*Store, error) {
 	dir, err := DefaultDir()
 	if err != nil {
@@ -135,6 +135,9 @@ func OpenDefault() (*Store, error) {
 		return nil, err
 	}
 	s.owned = true
+	if err := s.checkDir(); err != nil {
+		return nil, err
+	}
 	return s, nil
 }
 
@@ -149,8 +152,10 @@ func chmodOwnerOnly(path string, mode fs.FileMode) error {
 // groupOrOther are the permission bits that let anyone but the owner in.
 const groupOrOther fs.FileMode = 0o077
 
-// checkDir refuses a configured directory open to group or other users and
-// restricts the plugin's own default directory. Windows has no mode bits.
+// checkDir keeps the plugin's own default directory at exactly 0700 (a
+// loosened one and one that lost owner bits alike) and refuses a configured
+// directory open to group or other users without changing it. Windows has
+// no mode bits.
 func (s *Store) checkDir() error {
 	if runtime.GOOS == "windows" {
 		return nil
@@ -159,14 +164,21 @@ func (s *Store) checkDir() error {
 	if err != nil {
 		return &FileError{FileUnavailable, s.dir, err}
 	}
-	if info.Mode().Perm()&groupOrOther == 0 {
+	mode := info.Mode().Perm()
+	if !s.owned {
+		if mode&groupOrOther != 0 {
+			return &FileError{FileUnavailable, s.dir, ErrDirNotPrivate}
+		}
 		return nil
 	}
-	if !s.owned {
-		return &FileError{FileUnavailable, s.dir, ErrDirNotPrivate}
+	if mode == 0o700 {
+		return nil
 	}
 	if err := os.Chmod(s.dir, 0o700); err != nil {
-		return &FileError{FileUnavailable, s.dir, fmt.Errorf("%w: %v", ErrDirNotPrivate, err)}
+		if mode&groupOrOther != 0 {
+			err = fmt.Errorf("%w: %v", ErrDirNotPrivate, err)
+		}
+		return &FileError{FileUnavailable, s.dir, err}
 	}
 	return nil
 }
