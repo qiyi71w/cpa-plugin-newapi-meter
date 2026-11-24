@@ -194,6 +194,145 @@ func TestPermissions(t *testing.T) {
 	}
 }
 
+// seedOpen writes a data file holding a credential with the given modes, the
+// way a restored backup or a hand-made directory arrives.
+func seedOpen(t *testing.T, dir string, dirMode, fileMode os.FileMode) []byte {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	raw := []byte(`{"schema_version":1,"accounts":[{"id":"acc_00000000000000a1","order":0,"name":"Restored","source":"newapi","base_url":"https://site.example.com","credential":"` + pat + `","proxy":"direct"}]}`)
+	path := filepath.Join(dir, FileName)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, fileMode); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, dirMode); err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func perm(t *testing.T, path string) os.FileMode {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info.Mode().Perm()
+}
+
+// A configured data_dir open to other users is refused, not modified, and
+// nothing is read from or written to it until it is made owner-only.
+func TestConfiguredDirOpenToOthersIsRefused(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits")
+	}
+	dir := filepath.Join(t.TempDir(), "restored")
+	raw := seedOpen(t, dir, 0o755, 0o644)
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := func(op string, err error) {
+		t.Helper()
+		var fe *FileError
+		if !errors.As(err, &fe) || fe.Kind != FileUnavailable || fe.Path != dir || fe.Reason() != "dir_not_private" {
+			t.Fatalf("%s: err = %v, want data_file_unavailable/dir_not_private at %s", op, err, dir)
+		}
+	}
+	list, err := s.List()
+	check("list", err)
+	if list != nil {
+		t.Fatalf("list served accounts from a refused directory: %+v", list)
+	}
+	_, err = s.Get("acc_00000000000000a1")
+	check("get", err)
+	_, err = s.Create(patInput("x"))
+	check("create", err)
+	_, err = s.Update("acc_00000000000000a1", patInput("x"))
+	check("update", err)
+	check("delete", s.Delete("acc_00000000000000a1"))
+	if d, f := perm(t, dir), perm(t, s.Path()); d != 0o755 || f != 0o644 {
+		t.Fatalf("refused directory was modified: dir %#o file %#o", d, f)
+	}
+	if got, _ := os.ReadFile(s.Path()); string(got) != string(raw) {
+		t.Fatalf("refused data file was rewritten: %q", got)
+	}
+
+	// Once the user makes the directory owner-only it works again, and the
+	// restored file is restricted before it is read.
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	list, err = s.List()
+	if err != nil || len(list) != 1 {
+		t.Fatalf("list after chmod 700 = %+v %v", list, err)
+	}
+	if f := perm(t, s.Path()); f != 0o600 {
+		t.Fatalf("file %#o after read, want 0600", f)
+	}
+}
+
+// A restored data file open to other users in an owner-only directory is
+// restricted to 0600 before any credential is read from it.
+func TestRestoredFileIsRestrictedBeforeRead(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits")
+	}
+	dir := filepath.Join(t.TempDir(), "data")
+	seedOpen(t, dir, 0o700, 0o644)
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := s.Get("acc_00000000000000a1")
+	if err != nil || a.Credential != pat {
+		t.Fatalf("get = %+v %v", a, err)
+	}
+	if d, f := perm(t, dir), perm(t, s.Path()); d != 0o700 || f != 0o600 {
+		t.Fatalf("dir %#o file %#o, want 0700/0600", d, f)
+	}
+}
+
+// The default directory belongs to the plugin: it is restricted to 0700 (as
+// is a restored file, to 0600) instead of being refused, also when it is
+// loosened while CPA runs.
+func TestDefaultDirIsKeptOwnerOnly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	dir, err := DefaultDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedOpen(t, dir, 0o755, 0o644)
+	s, err := OpenDefault()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if list, err := s.List(); err != nil || len(list) != 1 {
+		t.Fatalf("list = %+v %v", list, err)
+	}
+	if d, f := perm(t, dir), perm(t, s.Path()); d != 0o700 || f != 0o600 {
+		t.Fatalf("dir %#o file %#o, want 0700/0600", d, f)
+	}
+	if err := os.Chmod(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.List(); err != nil {
+		t.Fatal(err)
+	}
+	if d := perm(t, dir); d != 0o700 {
+		t.Fatalf("loosened default dir %#o, want 0700", d)
+	}
+}
+
 func TestAtomicReplace(t *testing.T) {
 	s := openTemp(t)
 	if _, err := s.Create(patInput("first")); err != nil {

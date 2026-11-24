@@ -61,7 +61,7 @@ CPA（CLIProxyAPI）原生插件。在 CPA WebUI 或 EasyCLIProxyAPI 的插件�
 
 ## Docker 部署
 
-用 Docker 运行 CPA 时，容器里的默认数据目录（官方镜像以 root 运行，即 `/root/.config/cpa-plugin-newapi-meter`）会随容器重建而丢失。请把数据目录放到挂载的卷上，插件目录也要挂载，否则重建容器后要重新安装插件：
+用 Docker 运行 CPA 时，容器里的默认数据目录（官方镜像以 root 运行，即 `/root/.config/cpa-plugin-newapi-meter`）会随容器重建而丢失。请把数据目录放到挂载的卷上，插件目录也要挂载，否则重建容器后要重新安装插件。挂载的数据目录必须只有所有者能访问（0700，所有者是容器里运行 CPA 的用户），否则插件拒绝使用它（见「数据目录与备份」）；例如在宿主机上先执行 `mkdir -p ./newapi-meter-data && chmod 700 ./newapi-meter-data`：
 
 ```yaml
 # docker-compose.yml 中 CPA 服务的卷
@@ -262,9 +262,13 @@ plugins:
 
 - 账户和凭据保存在数据目录下的 `accounts.json`。默认数据目录是 CPA 运行用户的配置目录下的 `cpa-plugin-newapi-meter`：Windows 为 `%AppData%\cpa-plugin-newapi-meter`；macOS 为 `~/Library/Application Support/cpa-plugin-newapi-meter`；Linux 在设置了 `$XDG_CONFIG_HOME` 时为 `$XDG_CONFIG_HOME/cpa-plugin-newapi-meter`，否则为 `~/.config/cpa-plugin-newapi-meter`。
 - 可以用插件配置项 `data_dir`（绝对路径）改到别处；插件会在目录不存在时创建它。请给它一个插件专用的目录。
-- Unix 上新建的目录权限为 0700，数据文件为 0600。文件没有额外加密，任何能读这个文件的人都能拿到账户凭据。
+- Unix 上数据目录必须只有所有者能访问（0700），数据文件为 0600。文件没有额外加密，任何能读这个文件的人都能拿到账户凭据。具体做法：
+  - 插件新建的目录为 0700；默认数据目录始终由插件保持为 0700。
+  - 已经存在的 `data_dir` 如果给同组或其他用户留了任何权限（例如 0755），插件**不会改动它，而是拒绝使用**：不读取其中的凭据、不查询站点，页面显示目录位置和原因。执行 `chmod 700 <目录>` 后点「重试」即可，不用重启 CPA。
+  - 每次读取前，插件会把对其他用户开放的数据文件（例如以 0644 恢复的备份）改为 0600；改不了时（例如文件属于别的用户）同样拒绝使用并说明原因。
+  - Windows 上不检查这些权限位，默认目录位于当前用户自己的 `%AppData%` 下。
 - 写入使用同目录临时文件加原子替换。如果数据文件无法解析，或者是更新版本的插件写的（`schema_version` 更高），插件**拒绝覆盖**，页面显示文件位置和原因；修复或从备份恢复后刷新即可，不用重启 CPA。
-- 没有导入导出。备份就是复制 `accounts.json`；恢复就是把它放回去。用 Docker 运行 CPA 时，把数据目录挂载到卷上，否则重建容器会丢失账户。
+- 没有导入导出。备份就是复制 `accounts.json`；恢复就是把它放回去（权限会在下次读取时收紧为 0600）。用 Docker 运行 CPA 时，把数据目录挂载到卷上，否则重建容器会丢失账户。
 - 卸载插件不会删除数据目录。
 
 ## 管理路由（开发者说明）
@@ -336,7 +340,7 @@ plugins:
 
 失败原因 `code`：`site_unreachable`（网络、DNS、TLS 错误或超时）、`legacy_token_retired`、`pat_scope_denied`、`credential_invalid`、`site_blocked`（站点返回 HTML 而不是 JSON）、`site_error`（5xx）、`bad_response`（其余无法使用的响应，包括 `success: false`），以及自定义查询的 `script_error`、`query_timeout`、`reported_invalid`。`diagnostic` 是可以安全展示的诊断代码，例如 `ACCESS_TOKEN_LEGACY_RETIRED`、`HTTP_401`、`HTML_RESPONSE`、`NETWORK_TIMEOUT`；自定义查询另有 `SCRIPT_SYNTAX`、`SCRIPT_RUNTIME`、`SCRIPT_REQUEST`、`REQUEST_URL`、`REQUEST_SCHEME`、`REQUEST_METHOD`、`REQUEST_HEADER`、`SCRIPT_RESULT`、`SCRIPT_TIMEOUT`、`REQUEST_TIMEOUT`、`IS_VALID_FALSE`、`INVALID_JSON`、`RESPONSE_TOO_LARGE`。
 
-错误响应形如 `{"error": {"code": "...", "field": "...", "reason": "...", "path": "..."}}`：`validation_failed`（带 `field` 和 `reason`）、`invalid_json`、`account_not_found`，以及数据文件相关的 `data_file_corrupt`、`data_file_newer`、`data_file_unavailable`（带 `path`，状态码 503）。另有三个与具体账户无关的错误：`invalid_request`（400，宿主转来的管理请求无法解析）、`method_not_allowed`（405，用 GET 以外的方法请求资源路由的页面）、`not_found`（404，没有与「方法 + 路径」匹配的路由）。
+错误响应形如 `{"error": {"code": "...", "field": "...", "reason": "...", "path": "..."}}`：`validation_failed`（带 `field` 和 `reason`）、`invalid_json`、`account_not_found`，以及数据文件相关的 `data_file_corrupt`、`data_file_newer`、`data_file_unavailable`（带 `path`，状态码 503）。`data_file_unavailable` 在目录或文件对其他用户开放时带 `reason`：`dir_not_private`（配置的数据目录给同组或其他用户留了权限，`path` 是该目录）或 `file_not_private`（数据文件无法收紧为 0600，`path` 是该文件）。另有三个与具体账户无关的错误：`invalid_request`（400，宿主转来的管理请求无法解析）、`method_not_allowed`（405，用 GET 以外的方法请求资源路由的页面）、`not_found`（404，没有与「方法 + 路径」匹配的路由）。
 
 查询行为：每个账户每种查询的结果在进程内缓存 60 秒；同一账户的并发查询合并成一次；单个站点请求 15 秒超时；自定义查询整体（请求加脚本）10 秒超时。
 

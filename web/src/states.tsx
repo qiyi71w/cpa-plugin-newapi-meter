@@ -82,11 +82,18 @@ export function LoadError(p: { error: unknown; onRetry: () => void }) {
   let title: string;
   let text: string;
   let path: string | undefined;
+  let pathLabel = t("error.path");
   const err = p.error;
   if (err instanceof ApiError && err.body?.code?.startsWith("data_file_")) {
     const code = err.body.code;
+    const reason = err.body.reason;
     title = tDynamic(`error.${code}.title`, t("error.http.title"));
     text = tDynamic(`error.${code}.text`, t("error.http.text", { status: err.status }));
+    if (reason) {
+      title = tDynamic(`error.${code}.${reason}.title`, title);
+      text = tDynamic(`error.${code}.${reason}.text`, text);
+    }
+    if (reason === "dir_not_private") pathLabel = t("error.dirPath");
     path = err.body.path;
   } else if (err instanceof ApiError) {
     title = t("error.http.title");
@@ -104,7 +111,7 @@ export function LoadError(p: { error: unknown; onRetry: () => void }) {
       <p class="nm-alert-text">{text}</p>
       {path && (
         <p class="nm-alert-meta">
-          {t("error.path")} <code class="nm-code">{path}</code>
+          {pathLabel} <code class="nm-code">{path}</code>
         </p>
       )}
       <div class="nm-actions">

@@ -118,8 +118,8 @@ func (p *Plugin) storeFailure(err error) managementResponse {
 	case errors.Is(err, store.ErrNotFound):
 		return apiError(http.StatusNotFound, errorBody{Code: "account_not_found"})
 	case errors.As(err, &fe):
-		p.log.Error("data file refused", "error_kind", string(fe.Kind), "path", fe.Path)
-		return apiError(http.StatusServiceUnavailable, errorBody{Code: string(fe.Kind), Path: fe.Path})
+		p.log.Error("data file refused", "error_kind", string(fe.Kind), "reason", fe.Reason(), "path", fe.Path)
+		return apiError(http.StatusServiceUnavailable, errorBody{Code: string(fe.Kind), Reason: fe.Reason(), Path: fe.Path})
 	}
 	p.log.Error("data file operation failed")
 	return apiError(http.StatusServiceUnavailable, errorBody{Code: string(store.FileUnavailable)})

@@ -97,6 +97,13 @@ const zh = {
   "error.data_file_newer.text": "插件不会覆盖这个文件。升级插件后再打开。",
   "error.data_file_unavailable.title": "无法使用账户数据目录",
   "error.data_file_unavailable.text": "检查插件配置里的 data_dir：需要是 CPA 可以读写的绝对路径。",
+  "error.data_file_unavailable.dir_not_private.title": "账户数据目录对其他用户开放",
+  "error.data_file_unavailable.dir_not_private.text":
+    "这个目录保存着账户凭据，但同组或其他用户也能访问，插件因此不读取它。把目录改为仅所有者可访问（例如 chmod 700），然后重试。",
+  "error.data_file_unavailable.file_not_private.title": "账户数据文件对其他用户开放",
+  "error.data_file_unavailable.file_not_private.text":
+    "插件没能把它改为仅所有者可读写，因此不读取它。以运行 CPA 的用户执行 chmod 600，或把文件的所有者改为这个用户，然后重试。",
+  "error.dirPath": "目录位置",
   "error.path": "文件位置",
   "error.network.title": "连接不到 CPA 管理接口",
   "error.network.text": "确认 CPA 正在运行，然后重试。",
@@ -399,6 +406,13 @@ const en: Record<MessageKey, string> = {
   "error.data_file_newer.text": "The plugin will not overwrite it. Update the plugin, then open this page again.",
   "error.data_file_unavailable.title": "The account data directory is unavailable",
   "error.data_file_unavailable.text": "Check data_dir in the plugin configuration: it must be an absolute path CPA can read and write.",
+  "error.data_file_unavailable.dir_not_private.title": "The account data directory is open to other users",
+  "error.data_file_unavailable.dir_not_private.text":
+    "It holds account credentials, but group members or other users can access it, so the plugin will not read it. Make the directory owner-only (for example chmod 700), then retry.",
+  "error.data_file_unavailable.file_not_private.title": "The account data file is open to other users",
+  "error.data_file_unavailable.file_not_private.text":
+    "The plugin could not make it owner-only, so it will not read it. Run chmod 600 on it as the user running CPA, or make that user its owner, then retry.",
+  "error.dirPath": "Directory",
   "error.path": "File",
   "error.network.title": "Cannot reach the CPA management API",
   "error.network.text": "Make sure CPA is running, then retry.",

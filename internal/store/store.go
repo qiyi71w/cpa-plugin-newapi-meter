@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -45,6 +46,17 @@ const (
 	FileUnavailable FileErrorKind = "data_file_unavailable"
 )
 
+// Errors a FileUnavailable error wraps when the data directory or file is
+// open to other users. Their text is the reason reported to the page.
+var (
+	// ErrDirNotPrivate: a configured data directory grants group or other
+	// users access; the plugin refuses it instead of changing its mode.
+	ErrDirNotPrivate = errors.New("dir_not_private")
+	// ErrFileNotPrivate: the data file grants group or other users access and
+	// could not be restricted to its owner.
+	ErrFileNotPrivate = errors.New("file_not_private")
+)
+
 // FileError reports a data file the plugin will not overwrite or cannot use.
 type FileError struct {
 	Kind FileErrorKind
@@ -54,6 +66,17 @@ type FileError struct {
 
 func (e *FileError) Error() string { return fmt.Sprintf("%s: %s: %v", e.Kind, e.Path, e.Err) }
 func (e *FileError) Unwrap() error { return e.Err }
+
+// Reason names a cause the user can fix ("dir_not_private",
+// "file_not_private"), or is empty.
+func (e *FileError) Reason() string {
+	for _, r := range []error{ErrDirNotPrivate, ErrFileNotPrivate} {
+		if errors.Is(e.Err, r) {
+			return r.Error()
+		}
+	}
+	return ""
+}
 
 type document struct {
 	SchemaVersion int       `json:"schema_version"`
@@ -67,10 +90,15 @@ type Store struct {
 	mu   sync.Mutex
 	dir  string
 	path string
+	// owned: the directory belongs to the plugin alone (the default one), so
+	// the plugin may restrict it; a configured directory is only checked.
+	owned bool
 }
 
 // Open prepares dir (created 0700 when missing) and returns a store for its
-// data file. An existing dir keeps its own permissions; the file is 0600.
+// data file. On Unix an existing dir must already be owner-only: every
+// operation refuses one that grants group or other access, and restricts a
+// data file that does to 0600 before reading it.
 func Open(dir string) (*Store, error) {
 	if !filepath.IsAbs(dir) {
 		return nil, &FileError{FileUnavailable, dir, errors.New("data directory must be an absolute path")}
@@ -94,8 +122,9 @@ func Open(dir string) (*Store, error) {
 	return &Store{dir: dir, path: filepath.Join(dir, FileName)}, nil
 }
 
-// OpenDefault opens DefaultDir and enforces 0700 on it even when it already
-// exists, because that directory belongs to the plugin alone.
+// OpenDefault opens DefaultDir. Every operation keeps it 0700, even when it
+// already existed or was loosened later, because that directory belongs to
+// the plugin alone.
 func OpenDefault() (*Store, error) {
 	dir, err := DefaultDir()
 	if err != nil {
@@ -105,9 +134,7 @@ func OpenDefault() (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := chmodOwnerOnly(dir, 0o700); err != nil {
-		return nil, &FileError{FileUnavailable, dir, err}
-	}
+	s.owned = true
 	return s, nil
 }
 
@@ -117,6 +144,54 @@ func chmodOwnerOnly(path string, mode fs.FileMode) error {
 		return nil
 	}
 	return os.Chmod(path, mode)
+}
+
+// groupOrOther are the permission bits that let anyone but the owner in.
+const groupOrOther fs.FileMode = 0o077
+
+// checkDir refuses a configured directory open to group or other users and
+// restricts the plugin's own default directory. Windows has no mode bits.
+func (s *Store) checkDir() error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	info, err := os.Stat(s.dir)
+	if err != nil {
+		return &FileError{FileUnavailable, s.dir, err}
+	}
+	if info.Mode().Perm()&groupOrOther == 0 {
+		return nil
+	}
+	if !s.owned {
+		return &FileError{FileUnavailable, s.dir, ErrDirNotPrivate}
+	}
+	if err := os.Chmod(s.dir, 0o700); err != nil {
+		return &FileError{FileUnavailable, s.dir, fmt.Errorf("%w: %v", ErrDirNotPrivate, err)}
+	}
+	return nil
+}
+
+// readFile reads the data file, first restricting it to 0600 when it grants
+// group or other access (for example a restored backup). It reports
+// fs.ErrNotExist when there is no file yet.
+func (s *Store) readFile() ([]byte, error) {
+	f, err := os.Open(s.path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	if runtime.GOOS != "windows" {
+		info, err := f.Stat()
+		if err != nil {
+			return nil, err
+		}
+		if info.Mode().Perm()&groupOrOther != 0 {
+			if err := f.Chmod(0o600); err != nil {
+				return nil, fmt.Errorf("%w: %v", ErrFileNotPrivate, err)
+			}
+		}
+	}
+	return io.ReadAll(f)
 }
 
 // syncDir makes the rename durable on Unix; Windows has no directory fsync.
@@ -137,8 +212,13 @@ func (s *Store) Path() string { return s.path }
 func (s *Store) Dir() string { return s.dir }
 
 // load returns the accounts sorted by order. A missing file is an empty list.
+// It runs before every read and write, so no credential is read from, and no
+// change is written to, a directory or file other users can reach.
 func (s *Store) load() ([]Account, error) {
-	raw, err := os.ReadFile(s.path)
+	if err := s.checkDir(); err != nil {
+		return nil, err
+	}
+	raw, err := s.readFile()
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
 	}

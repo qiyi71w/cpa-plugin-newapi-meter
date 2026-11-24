@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -416,6 +417,54 @@ func TestUnreadableDataFileIsReportedAndKept(t *testing.T) {
 	got, _ := os.ReadFile(path)
 	if !bytes.Equal(got, content) {
 		t.Fatal("refused file was rewritten")
+	}
+}
+
+// A configured data_dir that other users can open (here a restored 0755
+// directory with a 0644 file) serves no account and queries no site; the
+// error names the directory and the reason the page explains.
+func TestDataDirOpenToOthersIsRefused(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits")
+	}
+	h := newHarness(t)
+	u := newUpstream(t)
+	h.create(u, "A", secretPAT, nil)
+	path := filepath.Join(h.dir, store.FileName)
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(h.dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(path)
+	for _, r := range []reply{
+		h.do("GET", RoutePrefix+"/overview", url.Values{"force": {"1"}}, nil),
+		h.do("GET", RoutePrefix+"/accounts", nil, nil),
+		h.do("POST", RoutePrefix+"/accounts", nil, map[string]any{"name": "x", "base_url": "https://x.example.com", "credential": secretPAT}),
+	} {
+		assertNoSecrets(t, "refusal", string(r.Body))
+		e := r.json(t)["error"].(map[string]any)
+		if r.Status != http.StatusServiceUnavailable || e["code"] != "data_file_unavailable" || e["reason"] != "dir_not_private" || e["path"] != h.dir {
+			t.Fatalf("response = %d %s", r.Status, r.Body)
+		}
+	}
+	if n := u.count("/api/user/self"); n != 0 {
+		t.Fatalf("site queried %d times from a refused directory", n)
+	}
+	after, _ := os.ReadFile(path)
+	if !bytes.Equal(after, before) {
+		t.Fatal("refused data file was rewritten")
+	}
+
+	if err := os.Chmod(h.dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if items := h.overview(nil); len(items) != 1 || items[0]["state"] != "ok" {
+		t.Fatalf("after chmod 700: %v", items)
+	}
+	if info, _ := os.Stat(path); info.Mode().Perm() != 0o600 {
+		t.Fatalf("data file %#o after use, want 0600", info.Mode().Perm())
 	}
 }
 
