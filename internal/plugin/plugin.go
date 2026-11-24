@@ -32,7 +32,7 @@ const (
 	// management JSON responses are not HTML-escaped by the host.
 	SchemaVersion = 6
 	// MenuName is the host menu label of the page.
-	MenuName = "余额用量 · NewAPI Meter"
+	MenuName = "NewAPI 余额用量"
 
 	managementBase = "/v0/management"
 	resourceBase   = "/v0/resource/plugins/" + ID

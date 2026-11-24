@@ -1,6 +1,6 @@
 # NewAPI Meter
 
-CPA（CLIProxyAPI）原生插件。在 CPA WebUI 或 EasyCLIProxyAPI 的插件菜单里打开「余额用量 · NewAPI Meter」，就能在一处看到你在多个 new-api 系站点上的账户：每个账户的状态、余额、今日花费，以及余额相对你设定的余额阈值还剩多少。
+CPA（CLIProxyAPI）原生插件。在 CPA WebUI 或 EasyCLIProxyAPI 的插件菜单里打开「NewAPI 余额用量」，就能在一处看到你在多个 new-api 系站点上的账户：每个账户的状态、余额、今日花费，以及余额相对你设定的余额阈值还剩多少。
 
 - 读取的是**账户级**数据（余额、累计已用、今日花费、实时 RPM/TPM），口径与站点后台一致；按 API Key 查额度请用 balance-query 一类插件。
 - 账户凭据只保存在插件自己的数据文件里，不写进 CPA 配置；页面和管理接口只返回打码值。
@@ -110,7 +110,7 @@ plugins:
 
 ## 添加账户
 
-1. 打开「余额用量 · NewAPI Meter」。还没有账户时，点空状态里的「添加账户」；已有账户时，点账户详情标题行的「管理账户」，再点「添加账户」。
+1. 打开「NewAPI 余额用量」。还没有账户时，点空状态里的「添加账户」；已有账户时，点账户详情标题行的「管理账户」，再点「添加账户」。
 2. 填写表单：
    - **名称**：显示在页签上，用来区分账户。
    - **数据来源**：选「内置 new-api」。非 new-api 服务选「自定义查询」，表单换成脚本和占位符，见下文「自定义查询」。
@@ -284,7 +284,7 @@ plugins:
 
 | 方法 | 路径 | 参数 | 说明 |
 |---|---|---|---|
-| GET | `/v0/resource/plugins/newapi-meter/index.html` | — | 页面（宿主菜单「余额用量 · NewAPI Meter」）；不含任何数据 |
+| GET | `/v0/resource/plugins/newapi-meter/index.html` | — | 页面（宿主菜单「NewAPI 余额用量」）；不含任何数据 |
 | GET | `/v0/management/plugins/newapi-meter/accounts` | — | 账户列表，凭据只给打码值 |
 | POST | `/v0/management/plugins/newapi-meter/accounts` | JSON 账户 | 新建账户，返回 201 |
 | PUT | `/v0/management/plugins/newapi-meter/accounts` | JSON 账户 + `id` | 更新账户：除凭据外的字段整体替换；凭据（以及 `apiKey`、`accessToken`）留空或原样传回打码值表示保留原值 |
