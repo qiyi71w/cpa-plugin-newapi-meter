@@ -155,19 +155,35 @@ func TestPastResultsDoNotAccumulate(t *testing.T) {
 // Dropping expired results never touches a result that can still be served
 // or a fetch that is still running.
 func TestPruningKeepsFreshResultsAndRunningFetches(t *testing.T) {
-	c, clk := newCache()
+	clk := &clock{t: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	// Get reads the clock once, under c.mu, before deciding to serve, join or
+	// fetch; an armed channel is closed by the next clock read.
+	var nextRead atomic.Pointer[chan struct{}]
+	c := New[int](TTL, func() time.Time {
+		if ch := nextRead.Swap(nil); ch != nil {
+			close(*ch)
+		}
+		return clk.now()
+	})
 	var calls atomic.Int32
 	fetch := func() int { return int(calls.Add(1)) }
 	fresh := Key{Account: "a", Query: "overview:2026-01-01", Fingerprint: "f"}
 	slow := Key{Account: "a", Query: "period:2025-12-01:2025-12-31", Fingerprint: "f"}
+	slowID := [2]string{slow.Account, slow.Query}
 
 	started, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	releaseSlow := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseSlow)
 	slowDone := make(chan int, 2)
 	go func() {
 		v, _, _ := c.Get(slow, false, func() int { close(started); <-release; return 100 })
 		slowDone <- v
 	}()
 	<-started
+	c.mu.Lock()
+	running := c.slots[slowID].inflight
+	c.mu.Unlock()
 
 	// Queries of another account drive the sweeps; they fetch separately.
 	other := func() int { return -1 }
@@ -183,9 +199,21 @@ func TestPruningKeepsFreshResultsAndRunningFetches(t *testing.T) {
 	if v, _, hit := c.Get(fresh, false, fetch); v != 1 || !hit {
 		t.Fatalf("fresh value after a sweep = %d hit=%v", v, hit)
 	}
+
+	// A forced caller of the slow query: once it has read the clock it holds
+	// c.mu, so taking c.mu afterwards waits until it has chosen its path.
+	// Nothing else reads the clock until the slow fetch is released.
+	read := make(chan struct{})
+	nextRead.Store(&read)
 	go func() { v, _, _ := c.Get(slow, true, fetch); slowDone <- v }()
-	time.Sleep(50 * time.Millisecond)
-	close(release)
+	<-read
+	c.mu.Lock()
+	cur := c.slots[slowID]
+	c.mu.Unlock()
+	if cur == nil || cur.inflight != running {
+		t.Fatal("the sweep dropped the running fetch: the forced caller started another instead of joining it")
+	}
+	releaseSlow()
 	for range 2 {
 		if v := <-slowDone; v != 100 {
 			t.Fatalf("a caller of the running fetch got %d, want its shared result", v)
