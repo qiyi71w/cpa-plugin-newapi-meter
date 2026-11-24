@@ -29,6 +29,7 @@ const CODES = [
   "field_not_boolean",
   "script_failed",
   "uncaught",
+  "unknown",
 ];
 
 describe("script reasons", () => {
@@ -51,6 +52,16 @@ describe("script reasons", () => {
   test("an uncaught value names its position only when known", () => {
     expect(reasonText({ code: "uncaught", field: "script:2:3" })).toContain("script:2:3");
     expect(reasonText({ code: "uncaught" })).toBe("脚本抛出了一个无法转成文字的值。");
+  });
+
+  test("SEC-8: a code without a sentence is never shown as is", () => {
+    const fallback = reasonText({ code: "unknown" });
+    for (const code of ["sk-synthetic-custom-api-key-5001", "toString", "__proto__", "constructor", "", "Script error"]) {
+      const text = reasonText({ code, field: "result.remaining" });
+      expect(text).toBe(fallback);
+      expect(text).not.toContain(code || "\u0000");
+    }
+    expect(fallback).toContain("Object.prototype");
   });
 });
 

@@ -332,6 +332,7 @@ const zh = {
   "custom.reason.script_failed": "脚本运行失败，引擎没有给出原因。",
   "custom.reason.uncaught": "脚本抛出了一个无法转成文字的值。",
   "custom.reason.uncaught_at": "脚本在 {field} 抛出了一个无法转成文字的值。",
+  "custom.reason.unknown": "插件无法说明脚本哪里出了问题。检查 request 和 extractor 的写法，以及脚本有没有改动 Object.prototype 等内置对象。",
 } as const;
 
 export type MessageKey = keyof typeof zh;
@@ -666,6 +667,7 @@ const en: Record<MessageKey, string> = {
   "custom.reason.script_failed": "The script failed and the engine gave no reason.",
   "custom.reason.uncaught": "The script threw a value that cannot be shown as text.",
   "custom.reason.uncaught_at": "The script threw a value at {field} that cannot be shown as text.",
+  "custom.reason.unknown": "The plugin cannot tell what went wrong in the script. Check how request and extractor are written, and whether the script changes built-ins such as Object.prototype.",
 };
 
 export type Lang = "zh" | "en";

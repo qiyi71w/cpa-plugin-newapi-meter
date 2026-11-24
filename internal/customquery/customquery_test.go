@@ -615,6 +615,37 @@ func TestUnusableConfigAndRequestReasons(t *testing.T) {
 	}
 }
 
+// SEC-8: a script that replaces built-ins can make the prelude report any
+// "reason"; only the prelude's own codes pass, the rest become
+// ReasonUnknown, so no script string (here the apiKey) is passed on.
+func TestForgedReasonsBecomeUnknown(t *testing.T) {
+	srv := serveJSON(t, nil, `{"v": 1}`)
+	rn, d := newRunner()
+	tail := "\n" + `({ request: { url: "{{baseUrl}}" }, extractor: function (r) { return { remaining: r.v }; } })`
+	for prefix, want := range map[string]string{
+		`Object.prototype.toJSON = function () { return { reason: "{{apiKey}}" }; };`:        ReasonUnknown,
+		`Object.prototype.toJSON = function () { return { reason: "{{accessToken}} x" }; };`: ReasonUnknown,
+		`Object.prototype.toJSON = function () { return { reason: "url_scheme" }; };`:        ReasonUnknown,
+		`Object.prototype.toJSON = function () { return { reason: "not_config" }; };`:        ReasonNotConfig,
+		`Object.prototype.toJSON = function () { return { reason: 5 }; };`:                   ReasonRequestUnreadable,
+		`JSON.stringify = function () { return '{"reason": "{{apiKey}}"}'; };`:               "", // the prelude kept the original
+	} {
+		r := rn.Run(context.Background(), account(prefix+tail, srv.URL))
+		b, _ := json.Marshal(r)
+		if strings.Contains(string(b), apiKey) || strings.Contains(string(b), accessToken) {
+			t.Errorf("%s: secret in result %s", prefix, b)
+		}
+		if want == "" {
+			continue
+		}
+		wantFailure(t, r, status.ScriptError, DiagRequest)
+		wantReason(t, prefix, r, Reason{Code: want})
+	}
+	if d.n.Load() != 1 {
+		t.Fatalf("%d requests were sent, want only the untampered one", d.n.Load())
+	}
+}
+
 func TestUnusableResultsAndResponses(t *testing.T) {
 	rn, _ := newRunner()
 	srv := serveJSON(t, nil, `{"v": 1}`)

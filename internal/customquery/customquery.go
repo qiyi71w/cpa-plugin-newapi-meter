@@ -129,7 +129,18 @@ const (
 	ReasonBooleanType       = "field_not_boolean"
 	ReasonScriptFailed      = "script_failed"
 	ReasonUncaught          = "uncaught"
+	// ReasonUnknown stands for any reason the plugin did not write, e.g. one
+	// a script forged by changing built-ins the prelude relies on.
+	ReasonUnknown = "unknown"
 )
+
+// preludeReasons are the codes the prelude's request helper reports. Its
+// output passes through script-replaceable built-ins (an inherited toJSON),
+// so any other value is not trusted as a code.
+var preludeReasons = map[string]bool{
+	ReasonNotConfig: true, ReasonRequestMissing: true, ReasonExtractorMissing: true,
+	ReasonHeadersType: true, ReasonBodyType: true,
+}
 
 // Runner runs custom queries.
 type Runner struct {
@@ -444,7 +455,11 @@ func buildRequest(raw string) (outbound.Request, *Result) {
 		return outbound.Request{}, reasonFailure(DiagRequest, ReasonRequestUnreadable, "")
 	}
 	if r.Reason != "" {
-		return outbound.Request{}, reasonFailure(DiagRequest, r.Reason, "")
+		code := r.Reason
+		if !preludeReasons[code] {
+			code = ReasonUnknown
+		}
+		return outbound.Request{}, reasonFailure(DiagRequest, code, "")
 	}
 	u, err := url.Parse(strings.TrimSpace(r.URL))
 	if err != nil || u.Host == "" || u.Opaque != "" {
