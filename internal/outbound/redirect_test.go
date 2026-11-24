@@ -243,6 +243,80 @@ func TestFollowKeepsAnExplicitReferer(t *testing.T) {
 	}
 }
 
+// A script may set an empty Referer. net/http treats an empty explicit value
+// as absent and would send the previous hop's full URL; the plugin must send
+// the origin-only value instead.
+func TestFollowEmptyRefererBecomesTheOrigin(t *testing.T) {
+	b := newOrigin(t, answerJSON)
+	var aReferer string
+	a := newOrigin(t, func(o *origin, w http.ResponseWriter, r *http.Request) {
+		aReferer = r.Header.Get("Referer")
+		redirectTo(http.StatusFound, func(*http.Request) string { return b.URL + "/landing" })(o, w, r)
+	})
+	req := Request{URL: a.URL + "/api/usage?key=" + redirQuerySecret, Header: http.Header{"Referer": {""}}, Proxy: Follow}
+	if _, err := New(hosttest.New()).Do(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	got := b.requests()
+	if s := b.leaked(); len(s) != 0 || len(got) != 1 || !strings.Contains(got[0], "\r\nReferer: "+a.URL+"/\r\n") || aReferer != a.URL+"/" {
+		t.Fatalf("Referer at A %q; B got %q (leaked %v); want only the origin %s/", aReferer, got, s, a.URL)
+	}
+}
+
+// routes answers each URL with a scripted response and records what was
+// requested, so redirects across schemes on default ports can be tested
+// without binding ports 80 and 443.
+type routes struct {
+	mu   sync.Mutex
+	seen []string
+	next map[string]string // URL → Location of a 302; others answer 200
+}
+
+func (rt *routes) RoundTrip(r *http.Request) (*http.Response, error) {
+	u := r.URL.String()
+	rt.mu.Lock()
+	rt.seen = append(rt.seen, u)
+	rt.mu.Unlock()
+	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{}`)), Request: r}
+	if loc, ok := rt.next[u]; ok {
+		resp.StatusCode = http.StatusFound
+		resp.Header.Set("Location", loc)
+	}
+	return resp, nil
+}
+
+func TestDirectNeverFollowsADowngradeAfterAnUpgrade(t *testing.T) {
+	cases := []struct {
+		name   string
+		next   map[string]string
+		status int
+		seen   []string
+	}{
+		{"upgrade then downgrade", map[string]string{
+			"http://a.example.com/start": "https://a.example.com/up",
+			"https://a.example.com/up":   "http://a.example.com/down",
+		}, http.StatusFound, []string{"http://a.example.com/start", "https://a.example.com/up"}},
+		{"upgrade, same-origin https hop, then downgrade", map[string]string{
+			"http://a.example.com/start": "https://a.example.com/up",
+			"https://a.example.com/up":   "https://a.example.com/up2",
+			"https://a.example.com/up2":  "http://a.example.com/start2",
+		}, http.StatusFound, []string{"http://a.example.com/start", "https://a.example.com/up", "https://a.example.com/up2"}},
+		{"upgrade then same-origin https hops", map[string]string{
+			"http://a.example.com/start": "https://a.example.com/up",
+			"https://a.example.com/up":   "https://A.example.com:443/done",
+		}, http.StatusOK, []string{"http://a.example.com/start", "https://a.example.com/up", "https://A.example.com:443/done"}},
+	}
+	for _, c := range cases {
+		rt := &routes{next: c.next}
+		cl := New(nil)
+		cl.direct.Transport = rt
+		resp, err := cl.Do(context.Background(), Request{URL: "http://a.example.com/start", Header: http.Header{"Authorization": {"Bearer " + redirAuthSecret}}, Proxy: Direct})
+		if err != nil || resp.StatusCode != c.status || strings.Join(rt.seen, " ") != strings.Join(c.seen, " ") {
+			t.Errorf("%s: status %v err %v, requested %v; want %d and %v", c.name, resp, err, rt.seen, c.status, c.seen)
+		}
+	}
+}
+
 func TestSameSite(t *testing.T) {
 	cases := []struct {
 		from, to string
@@ -258,6 +332,16 @@ func TestSameSite(t *testing.T) {
 		{"http://a.example.com/x", "http://b.example.com/y", false},
 		{"http://a.example.com/x", "http://sub.a.example.com/y", false},
 		{"http://example.com/x", "http://a.example.com/y", false},
+		// Hosts compare the way the transport resolves them: ASCII case is
+		// ignored, anything else is compared exactly.
+		{"http://\u03c3.example/x", "http://\u03c2.example/y", false},     // σ / ς fold together but are different IDNA hosts
+		{"http://k.example/x", "http://\u212a.example/y", false},          // KELVIN SIGN folds to k
+		{"http://\u00e9.example/x", "http://\u00c9.example/y", false},     // not folded outside ASCII
+		{"http://\u00e9.example/x", "http://\u00e9.example/y", true},      // identical
+		{"http://[fe80::1%25eth0]/x", "http://[fe80::1%25ETH0]/y", false}, // zones are case-sensitive
+		{"http://[fe80::1%25eth0]/x", "http://[fe80::1%25eth1]/y", false},
+		{"http://[fe80::1%25eth0]/x", "http://[fe80::1%25eth0]/y", true},
+		{"http://[FE80::1]/x", "http://[fe80::1]/y", true},
 	}
 	for _, c := range cases {
 		from, _ := url.Parse(c.from)
