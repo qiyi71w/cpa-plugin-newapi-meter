@@ -12,8 +12,11 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
+
+	"golang.org/x/net/idna"
 )
 
 // Proxy is an account's proxy option.
@@ -157,24 +160,37 @@ func sameSite(from, to *url.URL) bool {
 	return fs == "http" && ts == "https" && fp == "80" && tp == "443"
 }
 
-// sameHost compares host names the way the transport resolves them: an ASCII
-// name ignores ASCII letter case and nothing else; a non-ASCII name (sent
-// after IDNA conversion) and an IPv6 zone (an interface name, case-sensitive)
-// must match exactly. Unicode case folding is never used: it equates names
-// such as σ/ς that resolve to different hosts.
+// sameHost reports whether a and b are the host the transport dials (see
+// dialHost). A name without that form, such as one IDNA rejects, matches
+// nothing.
 func sameHost(a, b string) bool {
-	if a == "" || len(a) != len(b) {
+	da, ok := dialHost(a)
+	if !ok {
 		return false
 	}
-	if strings.Contains(a, "%") || !isASCII(a) || !isASCII(b) {
-		return a == b
-	}
-	for i := range len(a) {
-		if lowerASCII(a[i]) != lowerASCII(b[i]) {
-			return false
+	db, ok := dialHost(b)
+	return ok && da == db
+}
+
+// dialHost returns a URL host name the way net/http dials it: a non-ASCII
+// name after IDNA Lookup conversion (so 例子.com is xn--fsqu00a.com), then an
+// IP literal as its parsed address with the zone kept exactly, and any other
+// name in lower case since DNS ignores ASCII case. Unicode case folding is
+// never used: it equates names such as σ/ς that IDNA keeps apart.
+func dialHost(h string) (string, bool) {
+	if !isASCII(h) {
+		var err error
+		if h, err = idna.Lookup.ToASCII(h); err != nil {
+			return "", false
 		}
 	}
-	return true
+	if h == "" {
+		return "", false
+	}
+	if ip, err := netip.ParseAddr(h); err == nil {
+		return ip.String(), true
+	}
+	return strings.ToLower(h), true
 }
 
 func isASCII(s string) bool {
@@ -184,13 +200,6 @@ func isASCII(s string) bool {
 		}
 	}
 	return true
-}
-
-func lowerASCII(c byte) byte {
-	if 'A' <= c && c <= 'Z' {
-		return c + ('a' - 'A')
-	}
-	return c
 }
 
 func port(u *url.URL) string {
