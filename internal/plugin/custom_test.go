@@ -358,3 +358,39 @@ func TestTestScriptReasonsAreCodes(t *testing.T) {
 		}
 	}
 }
+
+// Today's spend carries the unit of the plan that provided it: here a CNY
+// plan behind a USD first plan (balance basis "first"). Built-in accounts
+// report their display currency.
+func TestTodaySpendCarriesItsOwnCurrency(t *testing.T) {
+	h := newHarness(t)
+	site := newCustomSite(t, `{"ok": true, "plans": [
+		{"name": "dollars", "left": 10, "unit": "USD"},
+		{"name": "yuan", "left": 5, "unit": "CNY", "today": 7}]}`)
+	u := newUpstream(t)
+	h.create(u, "Built-in", secretPAT, nil)
+	h.createCustom("Mixed", site.URL, nil)
+	h.createCustom("No today", newCustomSite(t, `{"ok": true, "plans": [{"name": "a", "left": 1, "unit": "USD"}]}`).URL, nil)
+
+	code := func(v any) any {
+		m, _ := v.(map[string]any)
+		return m["code"]
+	}
+	items := h.overview(nil)
+	if b := items[0]; b["today_spend"] == nil || code(b["today_spend_currency"]) != code(b["currency"]) {
+		t.Fatalf("built-in = %v", b)
+	}
+	m := items[1]
+	if code(m["currency"]) != "USD" || m["balance"] != float64(10) || m["today_spend"] != float64(7) || code(m["today_spend_currency"]) != "CNY" {
+		t.Fatalf("mixed = %v", m)
+	}
+	if n := items[2]; n["today_spend"] != nil || n["today_spend_currency"] != nil {
+		t.Fatalf("no today = %v", n)
+	}
+
+	_, res := h.testConnection(customInput("", site.URL, nil))
+	c := res["custom"].(map[string]any)
+	if code(res["currency"]) != "USD" || c["today_spend"] != float64(7) || code(c["today_spend_currency"]) != "CNY" {
+		t.Fatalf("test-script = %v", res)
+	}
+}

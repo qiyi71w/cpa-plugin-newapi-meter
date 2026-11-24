@@ -183,7 +183,7 @@ function spendCell(preset: PeriodChoice["preset"], d: AccountDetail | null, a: O
   const label = t(`spend.${preset}`);
   if (d) return d.spend_failure ? unavailable("spend", label, d.spend_failure) : { key: "spend", label, value: money(d.spend, d.currency) };
   // Today's figure is already in the overview, from the same query.
-  if (preset === "today") return a.today_spend == null ? unavailable("spend", label, a.today_failure) : { key: "spend", label, value: money(a.today_spend, a.currency) };
+  if (preset === "today") return a.today_spend == null ? unavailable("spend", label, a.today_failure) : { key: "spend", label, value: money(a.today_spend, a.today_spend_currency) };
   return { key: "spend", label, value: "", pending: true };
 }
 

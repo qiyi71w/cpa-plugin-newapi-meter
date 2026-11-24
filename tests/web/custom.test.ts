@@ -4,6 +4,8 @@
 import { describe, expect, test } from "bun:test";
 import { reasonText } from "../../web/src/custom";
 import { lang } from "../../web/src/i18n";
+import { totals } from "../../web/src/model";
+import type { OverviewAccount } from "../../web/src/types";
 
 // Every customquery.Reason* code the plugin sends.
 const CODES = [
@@ -49,5 +51,19 @@ describe("script reasons", () => {
   test("an uncaught value names its position only when known", () => {
     expect(reasonText({ code: "uncaught", field: "script:2:3" })).toContain("script:2:3");
     expect(reasonText({ code: "uncaught" })).toBe("脚本抛出了一个无法转成文字的值。");
+  });
+});
+
+const usd = { code: "USD", symbol: "$" };
+const cny = { code: "CNY", symbol: "¥" };
+const acc = (o: Partial<OverviewAccount>) =>
+  ({ id: "a", name: "A", source: "newapi", state: "ok", currency: usd, balance: 1, today_spend: 1, today_spend_currency: usd, ...o }) as OverviewAccount;
+
+describe("today's spend unit", () => {
+  test("R3: a CNY today spend is not added to a USD total", () => {
+    const mixed = acc({ id: "mixed", source: "custom", balance: 10, today_spend: 7, today_spend_currency: cny });
+    const tot = totals([mixed, acc({ id: "b", balance: 3, today_spend: 1 })]);
+    expect(tot?.balance).toBe(13);
+    expect(tot?.today).toBe(1);
   });
 });

@@ -714,9 +714,11 @@ type Summary struct {
 	Failure  *status.Failure
 	Probes   []status.Probe
 	Currency *newapi.Currency
-	// Balance, TotalUsed and TotalQuota follow Basis; TodaySpend comes from
-	// the first item that provides it.
+	// Balance, TotalUsed and TotalQuota follow Basis, in Currency. TodaySpend
+	// comes from the first item that provides it and is in that item's unit,
+	// TodayCurrency, which may differ from Currency.
 	Balance, TotalUsed, TotalQuota, TodaySpend *float64
+	TodayCurrency                              *newapi.Currency
 	// Basis is empty for a single item.
 	Basis Basis
 	// InvalidMessage is the invalidMessage of the item that reported isValid: false.
@@ -750,8 +752,8 @@ func Summarize(r Result, threshold *float64) Summary {
 		s.TotalQuota = sum(pick, func(it Item) *float64 { return it.Total })
 		for _, it := range r.Items {
 			if it.TodaySpend != nil {
-				v := *it.TodaySpend
-				s.TodaySpend = &v
+				v, tc := *it.TodaySpend, Currency(it.Unit)
+				s.TodaySpend, s.TodayCurrency = &v, &tc
 				break
 			}
 		}

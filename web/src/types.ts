@@ -46,6 +46,8 @@ export interface OverviewAccount {
   balance: number | null;
   total_used: number | null;
   today_spend: number | null;
+  /** today_spend's unit; null with today_spend. Equals currency for built-in accounts; a custom account's may differ. */
+  today_spend_currency: Currency | null;
   rpm: number | null;
   tpm: number | null;
   low_balance_threshold: number | null;
@@ -167,6 +169,8 @@ export interface CustomTest extends CustomView {
   balance: number | null;
   total_used: number | null;
   today_spend: number | null;
+  /** the unit of the plan that provided today_spend */
+  today_spend_currency: Currency | null;
 }
 
 export type PeriodPreset = "today" | "yesterday" | "7d" | "30d" | "custom";

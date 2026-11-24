@@ -267,6 +267,7 @@ type overviewItem struct {
 	Balance             *float64         `json:"balance"`
 	TotalUsed           *float64         `json:"total_used"`
 	TodaySpend          *float64         `json:"today_spend"`
+	TodaySpendCurrency  *newapi.Currency `json:"today_spend_currency"` // null with today_spend; Currency for built-in accounts
 	RPM                 *float64         `json:"rpm"`
 	TPM                 *float64         `json:"tpm"`
 	LowBalanceThreshold *float64         `json:"low_balance_threshold"`
@@ -339,6 +340,9 @@ func (p *Plugin) overviewOf(ctx context.Context, a store.Account, force bool) ov
 	item.State, item.Currency, item.DataExport = sum.State, sum.Currency, sum.DataExport
 	item.Balance, item.TotalUsed, item.TodaySpend, item.RPM, item.TPM = sum.Balance, sum.TotalUsed, sum.TodaySpend, sum.RPM, sum.TPM
 	item.BalanceFailure, item.TodayFailure, item.PrimaryFailure = sum.BalanceFailure, sum.TodayFailure, sum.Primary
+	if sum.TodaySpend != nil {
+		item.TodaySpendCurrency = sum.Currency
+	}
 	if sum.Failures != nil {
 		item.Failures = sum.Failures
 	}
@@ -551,7 +555,7 @@ func (p *Plugin) testConnection(ctx context.Context, body []byte) managementResp
 		if sum.Failure != nil {
 			out.Failures = sum.Probes
 		}
-		out.Custom = &customTest{Balance: sum.Balance, TotalUsed: sum.TotalUsed, TodaySpend: sum.TodaySpend, customView: customViewOf(r, sum)}
+		out.Custom = &customTest{Balance: sum.Balance, TotalUsed: sum.TotalUsed, TodaySpend: sum.TodaySpend, TodaySpendCurrency: sum.TodayCurrency, customView: customViewOf(r, sum)}
 	default:
 		// store.Resolve accepts only sources this build can query.
 		return apiError(http.StatusBadRequest, errorBody{Code: "validation_failed", Field: "source", Reason: store.ReasonUnsupported})

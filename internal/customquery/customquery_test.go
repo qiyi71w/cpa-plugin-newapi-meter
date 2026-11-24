@@ -206,6 +206,22 @@ func TestTodaySpendAndTimePlaceholdersUseCPALocalZone(t *testing.T) {
 	}
 }
 
+// R3: the balance follows the first plan (USD) while today's spend comes from
+// the CNY plan, so it must be labelled CNY, not USD.
+func TestTodaySpendKeepsTheUnitOfItsPlan(t *testing.T) {
+	items, reason := decodeResult(`[{"unit":"USD","remaining":10},{"unit":"CNY","remaining":5,"todaySpend":7}]`)
+	if reason != nil {
+		t.Fatal(reason)
+	}
+	s := Summarize(Result{Items: items}, nil)
+	if s.Basis != BasisFirst || s.Currency.Code != "USD" || *s.Balance != 10 || *s.TodaySpend != 7 || s.TodayCurrency == nil || s.TodayCurrency.Code != "CNY" {
+		t.Fatalf("summary = %+v (currency %+v, today currency %+v)", s, s.Currency, s.TodayCurrency)
+	}
+	if s := Summarize(Result{Items: items[:1]}, nil); s.TodaySpend != nil || s.TodayCurrency != nil {
+		t.Fatalf("no todaySpend: %+v", s)
+	}
+}
+
 func TestInfiniteLoopIsInterruptedWithinTheQueryLimit(t *testing.T) {
 	srv := serveJSON(t, nil, `{}`)
 	rn, _ := newRunner()

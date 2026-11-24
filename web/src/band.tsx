@@ -70,7 +70,7 @@ function Tab(p: { a: OverviewAccount; selected: boolean; nowMs: number; onSelect
           )}
         </span>
       );
-    sub = t("band.today", { amount: money(a.today_spend, a.currency) });
+    sub = t("band.today", { amount: money(a.today_spend, a.today_spend_currency) });
   }
   const hint = [a.name, t(`state.${a.state}`), gaugeHint(a)].filter(Boolean).join(" · ");
   return (

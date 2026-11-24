@@ -31,7 +31,8 @@ export function totals(accounts: OverviewAccount[]): Totals | null {
   return {
     currency,
     balance: counted.reduce((s, a) => s + (a.balance ?? 0), 0),
-    today: counted.reduce((s, a) => s + (a.today_spend ?? 0), 0),
+    // Today's spend can be in another unit than the balance (custom queries).
+    today: counted.reduce((s, a) => s + (a.today_spend != null && sameCurrency(a.today_spend_currency, currency) ? a.today_spend : 0), 0),
     excluded: accounts.length - counted.length,
   };
 }

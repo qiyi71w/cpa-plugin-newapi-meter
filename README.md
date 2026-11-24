@@ -189,7 +189,7 @@ plugins:
 
 - 只有一项时，余额、累计已用、总额度就是这一项的值。
 - 有多项且 `unit` 全部相同时，余额是各项 `remaining` 之和，页签和详情标「合计」；`unit` 不同时取第一项，标「第一项」。累计已用和总额度按同样的规则取。
-- 今日花费取第一个提供 `todaySpend` 的项。
+- 今日花费取第一个提供 `todaySpend` 的项，按这一项的 `unit` 显示，可以和余额的单位不同（例如余额取第一项的美元，今日花费来自人民币套餐）。
 - 任何一项 `isValid` 为 `false` 时，账户进入「需处理」，显示第一个这样的项的 `invalidMessage`。
 - 自定义查询账户同样参与余额阈值判断，也计入「全部账户合计」：合计按单位字符串判断是否一致，所以 `unit: "USD"` 的账户和美元站点的内置账户可以合计。
 - 自定义查询账户没有统计区间和图表；详情显示余额、累计已用、总额度、今日花费和套餐表。
@@ -321,11 +321,11 @@ plugins:
 
 `GET /accounts` 返回 `{"accounts": […], "data_file": "<数据文件路径>"}`：`data_file` 是数据文件 `accounts.json` 的绝对路径（管理视图在列表下显示它，方便备份）。列表中的账户：`id`、`order`、`name`、`source`、`base_url`、`credential_masked`、`credential_kind`（`pat` / `legacy`）、`user_id`、`low_balance_threshold`、`proxy`、`custom_script`、`custom_placeholders`（`baseUrl`、`userId`、`apiKeyMasked`、`accessTokenMasked`）。完整凭据从不出现在任何响应或插件日志里。
 
-概况（`overview`）中每个账户的主要字段：`state`（`ok` / `low` / `partial` / `needs_action`）、`currency`（`code` 为 `USD`/`CNY`/`CUSTOM`/`TOKENS`，自定义查询的其他单位为 `UNIT`，`symbol` 是单位原文）、`balance`、`total_used`、`today_spend`、`rpm`、`tpm`（读不到时为 `null`）、`low_balance_threshold`、`balance_failure` / `today_failure`（对应数字读不到的原因）、`primary_failure`（需处理时的主要原因）、`failures`（失败的接口）、`fetched_at`、`last_success_at`（CPA 本次运行中最近一次成功读取）、`cached`。顶层还有 `generated_at`、`today_start`（CPA 本机时区的今日零点）和 `timezone`。
+概况（`overview`）中每个账户的主要字段：`state`（`ok` / `low` / `partial` / `needs_action`）、`currency`（`code` 为 `USD`/`CNY`/`CUSTOM`/`TOKENS`，自定义查询的其他单位为 `UNIT`，`symbol` 是单位原文）、`balance`、`total_used`、`today_spend`、`rpm`、`tpm`（读不到时为 `null`）、`today_spend_currency`（`today_spend` 的单位，形状同 `currency`；`today_spend` 为 `null` 时也为 `null`；内置账户等于 `currency`，自定义查询账户是提供今日花费的那一项的单位）、`low_balance_threshold`、`balance_failure` / `today_failure`（对应数字读不到的原因）、`primary_failure`（需处理时的主要原因）、`failures`（失败的接口）、`fetched_at`、`last_success_at`（CPA 本次运行中最近一次成功读取）、`cached`。顶层还有 `generated_at`、`today_start`（CPA 本机时区的今日零点）和 `timezone`。
 
 自定义查询账户另有 `custom`：`balance_basis`（`sum` 合计 / `first` 第一项；只有一项时省略）、`total_quota`、`plans`（每项 `plan_name`、`extra`、`remaining`、`used`、`total`、`today_spend`、`unit`、`currency`、`is_valid`、`invalid_message`）、`invalid_message`（脚本报告不可用时）、`script_error`（引擎或脚本给出的报错原文，已遮掉 apiKey 和 accessToken）、`script_reason`（插件自己判断出的脚本问题，代替 `script_error`：`code` 是稳定的原因代码，如 `url_scheme`、`header_name_invalid`、`field_not_number`；`field` 是涉及的字段，如 `result[1].remaining`，可省略）。
 
-测试连接（`accounts/test`）返回：`source`、`ok`（所有计入的查询都成功）、`state`（`ok` / `partial` / `needs_action`，不做余额阈值判断）、`credential_kind`、`site_version`、`currency`、`data_export`、`failure`（最需要处理的失败，成功时为 `null`）、`failures`（失败的接口）。自定义查询账户的测试（页面上的「测试脚本」）另返回 `custom`，字段同概况里的 `custom`，再加上 `balance`、`total_used`、`today_spend`。请求体的校验规则与保存相同，但不检查 `name` 和 `low_balance_threshold`；校验失败返回 400 `validation_failed`，`id` 不存在返回 404 `account_not_found`。
+测试连接（`accounts/test`）返回：`source`、`ok`（所有计入的查询都成功）、`state`（`ok` / `partial` / `needs_action`，不做余额阈值判断）、`credential_kind`、`site_version`、`currency`、`data_export`、`failure`（最需要处理的失败，成功时为 `null`）、`failures`（失败的接口）。自定义查询账户的测试（页面上的「测试脚本」）另返回 `custom`，字段同概况里的 `custom`，再加上 `balance`、`total_used`、`today_spend` 和 `today_spend_currency`。请求体的校验规则与保存相同，但不检查 `name` 和 `low_balance_threshold`；校验失败返回 400 `validation_failed`，`id` 不存在返回 404 `account_not_found`。
 
 账户详情（`detail`）的参数：`period` 为 `today`（默认）、`yesterday`、`7d`、`30d` 或 `custom`；`custom` 时 `start` 和 `end` 是 CPA 本机时区的日期 `YYYY-MM-DD`（含首尾两天）。不合法时返回 400 `validation_failed`，`field` 为 `period` / `start` / `end`，`reason` 除通用的 `required`、`invalid`、`unsupported` 外还有 `swapped`（结束早于开始）、`too_long`（超过 365 天）、`future`（晚于今天）；自定义查询账户返回 `field: "id"`、`reason: "unsupported"`。今日区间（包括起止都是今天的自定义区间）直接复用概况的今日查询和缓存，不再访问站点；其他区间各自缓存 60 秒，`force=1` 跳过缓存。响应字段：
 

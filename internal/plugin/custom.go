@@ -47,6 +47,8 @@ type customTest struct {
 	Balance    *float64 `json:"balance"`
 	TotalUsed  *float64 `json:"total_used"`
 	TodaySpend *float64 `json:"today_spend"`
+	// TodaySpendCurrency is the unit of the plan that provided today_spend.
+	TodaySpendCurrency *newapi.Currency `json:"today_spend_currency"`
 	customView
 }
 
@@ -89,7 +91,7 @@ func (p *Plugin) customOverviewOf(ctx context.Context, a store.Account, force bo
 	})
 	sum := customquery.Summarize(r, a.LowBalanceThreshold)
 	item.State, item.Currency = sum.State, sum.Currency
-	item.Balance, item.TotalUsed, item.TodaySpend = sum.Balance, sum.TotalUsed, sum.TodaySpend
+	item.Balance, item.TotalUsed, item.TodaySpend, item.TodaySpendCurrency = sum.Balance, sum.TotalUsed, sum.TodaySpend, sum.TodayCurrency
 	if sum.State == status.NeedsAction {
 		item.PrimaryFailure = sum.Failure
 		item.Failures = sum.Probes

@@ -120,7 +120,7 @@ function Metrics(p: { a: OverviewAccount }) {
     balance,
     amountCell("used", t("metric.totalUsed"), a.total_used, a.currency),
     amountCell("total", t("custom.totalQuota"), view?.total_quota ?? null, a.currency),
-    amountCell("today", t("metric.todaySpend"), a.today_spend, a.currency),
+    amountCell("today", t("metric.todaySpend"), a.today_spend, a.today_spend_currency),
   ];
   return (
     <dl class="nm-metrics">
@@ -216,7 +216,7 @@ export function CustomTestResult(p: { r: ConnectionTest }) {
           </div>
           <div>
             <dt>{t("metric.todaySpend")}</dt>
-            <dd>{c?.today_spend == null ? t("custom.notProvided") : money(c.today_spend, r.currency)}</dd>
+            <dd>{c?.today_spend == null ? t("custom.notProvided") : money(c.today_spend, c.today_spend_currency)}</dd>
           </div>
           <div>
             <dt>{t("test.script.unit")}</dt>
