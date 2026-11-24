@@ -58,8 +58,9 @@ type Period struct {
 	// StartDate and EndDate are the first and last day, both included (YYYY-MM-DD).
 	StartDate, EndDate string
 	Days               int
-	// Start is local midnight of the first day; End is local midnight after
-	// the last day, so a period that includes today ends in the future.
+	// Start is the first instant of the first day (local midnight, or the end
+	// of a DST gap that skips midnight); End is the first instant after the
+	// last day, so a period that includes today ends in the future.
 	Start, End  time.Time
 	Granularity string
 }
@@ -119,18 +120,22 @@ func parseDate(s, field string, loc *time.Location) (time.Time, error) {
 	if s == "" {
 		return time.Time{}, &PeriodError{field, store.ReasonRequired}
 	}
-	t, err := time.ParseInLocation(dateLayout, s, loc)
+	// Parsed as a civil date: in loc, a date whose midnight is skipped would
+	// land on the previous day.
+	t, err := time.Parse(dateLayout, s)
 	if err != nil {
 		return time.Time{}, &PeriodError{field, store.ReasonInvalid}
 	}
-	return LocalMidnight(t), nil
+	y, m, d := t.Date()
+	return dayStart(y, m, d, loc), nil
 }
 
-// addDays moves a local midnight by n calendar days; across a DST change the
-// result is still local midnight, not a multiple of 24 hours away.
-func addDays(midnight time.Time, n int) time.Time {
-	y, m, d := midnight.Date()
-	return time.Date(y, m, d+n, 0, 0, 0, 0, midnight.Location())
+// addDays moves a day start by n calendar days; across a DST change the
+// result is still the first instant of the local day, not a multiple of 24
+// hours away.
+func addDays(start time.Time, n int) time.Time {
+	y, m, d := start.Date()
+	return dayStart(y, m, d+n, start.Location())
 }
 
 // civilDay numbers t's local calendar date.

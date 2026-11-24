@@ -135,6 +135,85 @@ func TestCustomPeriods(t *testing.T) {
 	}
 }
 
+// bucketsWithin runs bucketStarts with a deadline, so a day loop that stops
+// advancing fails the test instead of hanging it.
+func bucketsWithin(t *testing.T, p Period, at time.Time) []time.Time {
+	t.Helper()
+	done := make(chan []time.Time, 1)
+	go func() { done <- p.bucketStarts(at) }()
+	select {
+	case s := <-done:
+		return s
+	case <-time.After(5 * time.Second):
+		t.Fatalf("bucketStarts(%s..%s) did not return: the bucket loop does not advance", p.StartDate, p.EndDate)
+		return nil
+	}
+}
+
+func TestPeriodsWhereDSTSkipsMidnight(t *testing.T) {
+	// America/Santiago springs forward at local midnight 2026-09-06
+	// (00:00 -04 → 01:00 -03): that day has no 00:00 and is 23 hours long.
+	scl, err := time.LoadLocation("America/Santiago")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gapDayStart := time.Date(2026, 9, 6, 4, 0, 0, 0, time.UTC) // 01:00 -03
+	nextDayStart := time.Date(2026, 9, 7, 3, 0, 0, 0, time.UTC)
+
+	noon := time.Date(2026, 9, 6, 12, 0, 0, 0, scl)
+	if m := LocalMidnight(noon); !m.Equal(gapDayStart) || m.Format(dateLayout) != "2026-09-06" {
+		t.Fatalf("LocalMidnight(2026-09-06 12:00) = %s", m)
+	}
+
+	today := resolve(t, noon, PresetToday, "", "")
+	if today.StartDate != "2026-09-06" || !today.Start.Equal(gapDayStart) || !today.End.Equal(nextDayStart) ||
+		today.Minutes(noon) != 11*60 || len(bucketsWithin(t, today, noon)) != 11 || !today.IsToday(noon) {
+		t.Fatalf("today on the gap day = %+v, minutes %v", today, today.Minutes(noon))
+	}
+	if custom := resolve(t, noon, PresetCustom, "2026-09-06", "2026-09-06"); !custom.Start.Equal(gapDayStart) || !custom.IsToday(noon) {
+		t.Fatalf("custom gap day = %+v", custom)
+	}
+
+	after := time.Date(2026, 9, 7, 12, 0, 0, 0, scl)
+	y := resolve(t, after, PresetYesterday, "", "")
+	if y.StartDate != "2026-09-06" || !y.Start.Equal(gapDayStart) || !y.End.Equal(nextDayStart) ||
+		y.Minutes(after) != 23*60 || len(bucketsWithin(t, y, after)) != 23 {
+		t.Fatalf("yesterday = %+v, minutes %v", y, y.Minutes(after))
+	}
+
+	for _, tc := range []struct {
+		name                string
+		now                 time.Time
+		preset, start, end  string
+		firstDate, lastDate string
+		days                int
+	}{
+		{"custom across the gap", time.Date(2026, 9, 10, 12, 0, 0, 0, scl), PresetCustom, "2026-09-04", "2026-09-08", "2026-09-04", "2026-09-08", 5},
+		{"7d ending after the gap", time.Date(2026, 9, 8, 12, 0, 0, 0, scl), Preset7d, "", "", "2026-09-02", "2026-09-08", 7},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := resolve(t, tc.now, tc.preset, tc.start, tc.end)
+			if p.StartDate != tc.firstDate || p.EndDate != tc.lastDate || p.Days != tc.days || p.Granularity != GranularityDay {
+				t.Fatalf("period = %+v", p)
+			}
+			starts := bucketsWithin(t, p, tc.now)
+			if len(starts) != tc.days {
+				t.Fatalf("%d day buckets, want %d", len(starts), tc.days)
+			}
+			first, _ := time.Parse(dateLayout, tc.firstDate)
+			for i, s := range starts {
+				want := first.AddDate(0, 0, i).Format(dateLayout)
+				if s.Format(dateLayout) != want || !s.Equal(LocalMidnight(s)) {
+					t.Fatalf("bucket %d starts at %s, want the first instant of %s", i, s, want)
+				}
+				if want == "2026-09-06" && !s.Equal(gapDayStart) {
+					t.Fatalf("gap day bucket starts at %s", s)
+				}
+			}
+		})
+	}
+}
+
 func TestPeriodQueryTimestamps(t *testing.T) {
 	cases := []struct {
 		name     string

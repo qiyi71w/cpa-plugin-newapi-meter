@@ -93,7 +93,22 @@ type Source struct {
 // LocalMidnight is the start of the local day containing t, in t's zone.
 func LocalMidnight(t time.Time) time.Time {
 	y, m, d := t.Date()
-	return time.Date(y, m, d, 0, 0, 0, 0, t.Location())
+	return dayStart(y, m, d, t.Location())
+}
+
+// dayStart is the first instant of local date y-m-d (normalized like
+// time.Date). That is local midnight, except where a DST change skips
+// midnight (e.g. 00:00 → 01:00): time.Date then answers with an instant of
+// the previous day, and the day really starts where that zone ends.
+func dayStart(y int, m time.Month, d int, loc *time.Location) time.Time {
+	t := time.Date(y, m, d, 0, 0, 0, 0, loc)
+	wy, wm, wd := time.Date(y, m, d, 0, 0, 0, 0, time.UTC).Date()
+	if ty, tm, td := t.Date(); ty != wy || tm != wm || td != wd {
+		if _, end := t.ZoneBounds(); !end.IsZero() {
+			return end
+		}
+	}
+	return t
 }
 
 // Fetch queries the four endpoints concurrently. It never returns an error:

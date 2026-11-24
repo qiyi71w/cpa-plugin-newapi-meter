@@ -121,6 +121,67 @@ func TestDetailTodayReusesTheOverviewQuery(t *testing.T) {
 	}
 }
 
+// detailWithin is detail with a deadline, so a period whose bucket loop stops
+// advancing fails instead of hanging the test run.
+func (h *harness) detailWithin(q url.Values) map[string]any {
+	h.t.Helper()
+	done := make(chan reply, 1)
+	go func() { done <- h.do("GET", RoutePrefix+"/detail", q, nil) }()
+	select {
+	case r := <-done:
+		if r.Status != 200 {
+			h.t.Fatalf("detail %v: %d %s", q, r.Status, r.Body)
+		}
+		return r.json(h.t)
+	case <-time.After(10 * time.Second):
+		h.t.Fatalf("detail %v did not return", q)
+		return nil
+	}
+}
+
+func TestDetailWhereDSTSkipsMidnight(t *testing.T) {
+	// America/Santiago has no 00:00 on 2026-09-06: the day starts at 01:00 -03.
+	scl, err := time.LoadLocation("America/Santiago")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newHarness(t)
+	at := func(d, hour int) {
+		h.clock.mu.Lock()
+		h.clock.t = time.Date(2026, 9, d, hour, 0, 0, 0, scl)
+		h.clock.mu.Unlock()
+	}
+	at(6, 12)
+	s := newPeriodSite(t)
+	id := h.createAt(s.URL, "A")
+
+	ov := h.do("GET", RoutePrefix+"/overview", nil, nil)
+	if got := ov.json(t)["today_start"]; got != "2026-09-06T01:00:00-03:00" {
+		t.Fatalf("overview today_start = %v", got)
+	}
+	today := h.detailWithin(url.Values{"id": {id}, "period": {"today"}})["period"].(map[string]any)
+	if today["start_date"] != "2026-09-06" || today["start"] != "2026-09-06T01:00:00-03:00" || today["minutes"] != float64(11*60) {
+		t.Fatalf("today = %v", today)
+	}
+
+	at(10, 12)
+	d := h.detailWithin(url.Values{"id": {id}, "period": {"custom"}, "start": {"2026-09-04"}, "end": {"2026-09-08"}})
+	if n := len(d["usage"].(map[string]any)["buckets"].([]any)); n != 5 {
+		t.Fatalf("custom 2026-09-04..08 has %d day buckets", n)
+	}
+
+	at(8, 12)
+	d = h.detailWithin(url.Values{"id": {id}, "period": {"7d"}})
+	if n := len(d["usage"].(map[string]any)["buckets"].([]any)); n != 7 {
+		t.Fatalf("7d has %d day buckets", n)
+	}
+	at(7, 12)
+	y := h.detailWithin(url.Values{"id": {id}, "period": {"yesterday"}})["period"].(map[string]any)
+	if y["start"] != "2026-09-06T01:00:00-03:00" || y["minutes"] != float64(23*60) {
+		t.Fatalf("yesterday = %v", y)
+	}
+}
+
 func TestDetailPeriodCacheAndForce(t *testing.T) {
 	h := newHarness(t)
 	s := newPeriodSite(t)
