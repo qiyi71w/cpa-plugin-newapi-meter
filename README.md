@@ -30,6 +30,12 @@ CPA（CLIProxyAPI）原生插件。在 CPA WebUI 或 EasyCLIProxyAPI 的插件�
 - **站点未开启数据看板**（`/api/status` 里 `enable_data_export` 为 false）时，站点不记录按模型用量：页面在用量的位置说明原因，请站点管理员在站点设置里开启「数据看板」，开启之后产生的调用才会出现。账户状态不受影响，区间花费照常显示。
 - 所选区间的查询失败（例如站点限制了最长可查询的天数，以 `success: false` 拒绝较长的区间）只在详情里显示失败原因和「重试」，**不改变账户状态**；账户状态只由今日的查询决定。
 
+## CPA Core 版本要求
+
+- 最低支持 CPA Core **v8.0.0**。默认的代理选项「跟随 CPA 代理」经宿主回调 `host.http.*` 发出请求，其中用到的 `host.http.operation_open` 和 `host.http.cancel` 从 v8.0.0 起才提供。
+- 更早的 Core（例如 v7.3.x）只能在把每个账户的代理选项设为「直连」后使用；「跟随 CPA 代理」的账户在这些版本上查询不到数据。插件不为旧版本提供其他发送方式。
+- 本文中在宿主里核对过的行为（例如「CPA 的 request-log 会不会记下凭据」）是在 CPA Core v8.0.78 上核对的，其他 v8 版本没有逐一核对。
+
 ## 安装
 
 插件运行在 CPA Core 进程内，先在 CPA 配置里打开插件功能（`plugins.enabled: true`，默认关闭）。
