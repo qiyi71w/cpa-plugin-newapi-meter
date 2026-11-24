@@ -5,24 +5,49 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/qiyi71w/cpa-plugin-newapi-meter/internal/outbound"
+	"github.com/qiyi71w/cpa-plugin-newapi-meter/internal/outbound/hosttest"
 	"github.com/qiyi71w/cpa-plugin-newapi-meter/internal/status"
 )
 
-// classify sends one request through the real outbound entry to a handler
-// and classifies the result as the built-in source does.
+// send makes req through the real outbound entry with each transport (direct,
+// and follow through a fake host) and classifies the results as the built-in
+// source does. Both transports must classify alike.
+func send(t *testing.T, ctx func() (context.Context, context.CancelFunc), req outbound.Request) *status.Failure {
+	t.Helper()
+	var first *status.Failure
+	for i, mode := range []outbound.Proxy{outbound.Direct, outbound.Follow} {
+		c, cancel := ctx()
+		req.Proxy = mode
+		resp, err := outbound.New(hosttest.New()).Do(c, req)
+		cancel()
+		_, f := status.ClassifyNewAPI(resp, err)
+		if i == 0 {
+			first = f
+		} else if !reflect.DeepEqual(f, first) {
+			t.Fatalf("follow classified %+v, direct %+v", f, first)
+		}
+	}
+	return first
+}
+
+func background() (context.Context, context.CancelFunc) {
+	return context.WithCancel(context.Background())
+}
+
+// classify sends one request to a handler; see send.
 func classify(t *testing.T, h http.HandlerFunc, timeout time.Duration) *status.Failure {
 	t.Helper()
 	srv := httptest.NewServer(h)
 	defer srv.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	resp, err := outbound.New().Do(ctx, outbound.Request{URL: srv.URL + "/api/user/self", Proxy: outbound.Direct})
-	_, f := status.ClassifyNewAPI(resp, err)
-	return f
+	return send(t, func() (context.Context, context.CancelFunc) {
+		return context.WithTimeout(context.Background(), timeout)
+	},
+		outbound.Request{URL: srv.URL + "/api/user/self"})
 }
 
 func reply(code int, contentType, body string) http.HandlerFunc {
@@ -97,8 +122,7 @@ func TestConnectionRefusedIsUnreachable(t *testing.T) {
 	}
 	addr := l.Addr().String()
 	l.Close()
-	resp, err := outbound.New().Do(context.Background(), outbound.Request{URL: "http://" + addr + "/api/status"})
-	_, f := status.ClassifyNewAPI(resp, err)
+	f := send(t, background, outbound.Request{URL: "http://" + addr + "/api/status"})
 	if f == nil || f.Code != status.SiteUnreachable || f.Diagnostic != "NETWORK_CONNECT" {
 		t.Fatalf("failure = %+v", f)
 	}
@@ -107,8 +131,7 @@ func TestConnectionRefusedIsUnreachable(t *testing.T) {
 func TestTLSFailureIsUnreachable(t *testing.T) {
 	srv := httptest.NewTLSServer(reply(200, "application/json", `{"success":true,"data":{}}`))
 	defer srv.Close()
-	resp, err := outbound.New().Do(context.Background(), outbound.Request{URL: srv.URL})
-	_, f := status.ClassifyNewAPI(resp, err)
+	f := send(t, background, outbound.Request{URL: srv.URL})
 	if f == nil || f.Code != status.SiteUnreachable || f.Diagnostic != "NETWORK_TLS" {
 		t.Fatalf("failure = %+v", f)
 	}
@@ -117,8 +140,7 @@ func TestTLSFailureIsUnreachable(t *testing.T) {
 func TestOversizedResponseIsBadResponse(t *testing.T) {
 	srv := httptest.NewServer(reply(200, "application/json", `{"success":true,"data":"`+string(make([]byte, 64))+`"}`))
 	defer srv.Close()
-	resp, err := outbound.New().Do(context.Background(), outbound.Request{URL: srv.URL, MaxResponseBytes: 16})
-	_, f := status.ClassifyNewAPI(resp, err)
+	f := send(t, background, outbound.Request{URL: srv.URL, MaxResponseBytes: 16})
 	if f == nil || f.Code != status.BadResponse || f.Diagnostic != "RESPONSE_TOO_LARGE" {
 		t.Fatalf("failure = %+v", f)
 	}

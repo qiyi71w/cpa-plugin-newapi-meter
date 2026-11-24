@@ -114,7 +114,7 @@ func account(f *fakeSite, cred string) store.Account {
 var fixedNow = time.Date(2026, 3, 15, 10, 30, 0, 0, time.FixedZone("UTC+8", 8*3600))
 
 func source(now time.Time) *Source {
-	return &Source{HTTP: outbound.New(), Now: func() time.Time { return now }}
+	return &Source{HTTP: outbound.New(nil), Now: func() time.Time { return now }}
 }
 
 func fetch(t *testing.T, f *fakeSite, cred string, threshold *float64) (Reading, Summary) {

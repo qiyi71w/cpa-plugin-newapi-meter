@@ -97,37 +97,60 @@ func CallFrom(ctx context.Context) (Call, bool) {
 	return c, ok
 }
 
+// Host sends one CPA host callback (ABI 1: method name plus JSON request) and
+// returns the host's JSON envelope. cmd/newapi-meter implements it over the
+// host API CPA passes to cliproxy_plugin_init.
+type Host interface {
+	Call(method string, request []byte) ([]byte, error)
+}
+
 // Client is the plugin's outbound entry.
 type Client struct {
 	direct *http.Client
+	host   Host
 }
 
-// New returns a Client whose direct transport ignores every proxy setting.
-func New() *Client {
+// New returns a Client. Follow requests go through host; a nil host makes
+// them fail as network errors rather than silently going direct. The direct
+// transport ignores every proxy setting.
+func New(host Host) *Client {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.Proxy = nil
-	return &Client{direct: &http.Client{Transport: t}}
+	return &Client{direct: &http.Client{Transport: t}, host: host}
 }
 
-// Do sends req with the transport its Proxy option selects. This build only
-// has the direct transport, so Follow is served by it as well.
+// Do sends req with the transport its Proxy option selects: Direct uses the
+// plugin's own client, anything else (Follow, empty) relays through the host.
 func (c *Client) Do(ctx context.Context, req Request) (*Response, error) {
-	return c.doDirect(ctx, req)
+	if req.Proxy == Direct {
+		return c.doDirect(ctx, req)
+	}
+	return c.doFollow(ctx, req)
 }
 
-// CloseIdle releases pooled connections.
+// CloseIdle releases pooled connections of the direct transport.
 func (c *Client) CloseIdle() { c.direct.CloseIdleConnections() }
 
-func (c *Client) doDirect(ctx context.Context, req Request) (*Response, error) {
-	method := req.Method
-	if method == "" {
-		method = http.MethodGet
+func (r Request) method() string {
+	if r.Method == "" {
+		return http.MethodGet
 	}
+	return r.Method
+}
+
+func (r Request) limit() int64 {
+	if r.MaxResponseBytes <= 0 {
+		return DefaultMaxResponseBytes
+	}
+	return r.MaxResponseBytes
+}
+
+func (c *Client) doDirect(ctx context.Context, req Request) (*Response, error) {
 	var body io.Reader
 	if req.Body != nil {
 		body = bytes.NewReader(req.Body)
 	}
-	hr, err := http.NewRequestWithContext(ctx, method, req.URL, body)
+	hr, err := http.NewRequestWithContext(ctx, req.method(), req.URL, body)
 	if err != nil {
 		return nil, &Error{ErrRequest, errors.New("invalid request")}
 	}
@@ -139,10 +162,7 @@ func (c *Client) doDirect(ctx context.Context, req Request) (*Response, error) {
 		return nil, classifyTransport(ctx, err)
 	}
 	defer resp.Body.Close()
-	limit := req.MaxResponseBytes
-	if limit <= 0 {
-		limit = DefaultMaxResponseBytes
-	}
+	limit := req.limit()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		return nil, classifyTransport(ctx, err)

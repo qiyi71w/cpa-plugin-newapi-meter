@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/qiyi71w/cpa-plugin-newapi-meter/internal/outbound"
+	"github.com/qiyi71w/cpa-plugin-newapi-meter/internal/outbound/hosttest"
 	"github.com/qiyi71w/cpa-plugin-newapi-meter/internal/store"
 )
 
@@ -81,6 +83,7 @@ func (u *upstream) count(path string) int32 {
 type harness struct {
 	t     *testing.T
 	p     *Plugin
+	host  *hosttest.Host
 	logs  *syncBuffer
 	clock *clock
 	dir   string
@@ -110,10 +113,12 @@ func (c *clock) add(d time.Duration) {
 	c.mu.Unlock()
 }
 
+// newHarness builds a plugin whose follow transport goes through a fake host,
+// so accounts with the default proxy option reach the synthetic sites too.
 func newHarness(t *testing.T) *harness {
-	h := &harness{t: t, logs: &syncBuffer{}, clock: &clock{t: time.Date(2026, 5, 2, 9, 0, 0, 0, time.FixedZone("UTC+8", 8*3600))}}
+	h := &harness{t: t, host: hosttest.New(), logs: &syncBuffer{}, clock: &clock{t: time.Date(2026, 5, 2, 9, 0, 0, 0, time.FixedZone("UTC+8", 8*3600))}}
 	h.dir = filepath.Join(t.TempDir(), "data")
-	h.p = New(Options{Now: h.clock.now, Log: h.logs, Page: []byte("<!doctype html><html><head><style>b{}</style></head><body><script>1</script></body></html>")})
+	h.p = New(Options{Now: h.clock.now, Log: h.logs, HTTP: outbound.New(h.host), Page: []byte("<!doctype html><html><head><style>b{}</style></head><body><script>1</script></body></html>")})
 	h.register()
 	return h
 }

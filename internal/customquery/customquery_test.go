@@ -44,7 +44,7 @@ func (d *countingDoer) Do(ctx context.Context, req outbound.Request) (*outbound.
 }
 
 func newRunner() (*Runner, *countingDoer) {
-	d := &countingDoer{Doer: outbound.New()}
+	d := &countingDoer{Doer: outbound.New(nil)}
 	return &Runner{HTTP: d, Now: func() time.Time { return now }}, d
 }
 

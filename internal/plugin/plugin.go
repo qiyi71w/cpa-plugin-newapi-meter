@@ -46,7 +46,8 @@ const (
 type Options struct {
 	// Now returns the current time in CPA's local zone.
 	Now func() time.Time
-	// HTTP is the outbound entry.
+	// HTTP is the outbound entry; the default has no host, so only direct
+	// accounts can reach a site.
 	HTTP outbound.Doer
 	// Log receives plugin logs (text to stderr by default).
 	Log io.Writer
@@ -84,7 +85,7 @@ func New(opts Options) *Plugin {
 		opts.Now = time.Now
 	}
 	if opts.HTTP == nil {
-		opts.HTTP = outbound.New()
+		opts.HTTP = outbound.New(nil)
 	}
 	if opts.Log == nil {
 		opts.Log = os.Stderr
