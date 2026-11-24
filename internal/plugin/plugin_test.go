@@ -1,0 +1,625 @@
+package plugin
+
+import (
+	"bytes"
+	"encoding/base64"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/qiyi71w/cpa-plugin-newapi-meter/internal/outbound"
+	"github.com/qiyi71w/cpa-plugin-newapi-meter/internal/outbound/hosttest"
+	"github.com/qiyi71w/cpa-plugin-newapi-meter/internal/store"
+)
+
+const (
+	secretPAT    = "nap_synthetic_personal_access_token_9001"
+	secretLegacy = "synthetic-legacy-access-token-9002"
+	managementKy = "synthetic-management-key-9003"
+)
+
+// upstream is a synthetic new-api site that counts requests per endpoint.
+// When echo is set, every endpoint fails and echoes the Authorization header
+// back in its body, so tests can prove response bodies never leak.
+type upstream struct {
+	*httptest.Server
+	hits    sync.Map // path → *atomic.Int32
+	echo    atomic.Bool
+	delay   atomic.Int64
+	reached chan struct{}
+}
+
+func newUpstream(t *testing.T) *upstream {
+	u := &upstream{reached: make(chan struct{}, 64)}
+	u.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n, _ := u.hits.LoadOrStore(r.URL.Path, new(atomic.Int32))
+		n.(*atomic.Int32).Add(1)
+		select {
+		case u.reached <- struct{}{}:
+		default:
+		}
+		if d := u.delay.Load(); d > 0 {
+			time.Sleep(time.Duration(d))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if u.echo.Load() && r.URL.Path != "/api/status" {
+			w.WriteHeader(401)
+			_, _ = w.Write([]byte(`{"success":false,"message":"bad token ` + r.Header.Get("Authorization") + `"}`))
+			return
+		}
+		var data any
+		switch r.URL.Path {
+		case "/api/status":
+			data = map[string]any{"quota_per_unit": 500000, "quota_display_type": "USD", "version": "v0.0.0-test", "enable_data_export": true}
+		case "/api/user/self":
+			data = map[string]any{"quota": 5000000, "used_quota": 1000000}
+		case "/api/log/self/stat":
+			data = map[string]any{"quota": 500000, "rpm": 2, "tpm": 900}
+		case "/api/data/self":
+			data = []any{}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "data": data})
+	}))
+	t.Cleanup(u.Close)
+	return u
+}
+
+func (u *upstream) count(path string) int32 {
+	n, ok := u.hits.Load(path)
+	if !ok {
+		return 0
+	}
+	return n.(*atomic.Int32).Load()
+}
+
+type harness struct {
+	t     *testing.T
+	p     *Plugin
+	host  *hosttest.Host
+	logs  *syncBuffer
+	clock *clock
+	dir   string
+}
+
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+func (s *syncBuffer) String() string { s.mu.Lock(); defer s.mu.Unlock(); return s.b.String() }
+
+type clock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (c *clock) now() time.Time { c.mu.Lock(); defer c.mu.Unlock(); return c.t }
+func (c *clock) add(d time.Duration) {
+	c.mu.Lock()
+	c.t = c.t.Add(d)
+	c.mu.Unlock()
+}
+
+// newHarness builds a plugin whose follow transport goes through a fake host,
+// so accounts with the default proxy option reach the synthetic sites too.
+func newHarness(t *testing.T) *harness {
+	h := &harness{t: t, host: hosttest.New(), logs: &syncBuffer{}, clock: &clock{t: time.Date(2026, 5, 2, 9, 0, 0, 0, time.FixedZone("UTC+8", 8*3600))}}
+	h.dir = filepath.Join(t.TempDir(), "data")
+	h.p = New(Options{Now: h.clock.now, Log: h.logs, HTTP: outbound.New(h.host), Page: []byte("<!doctype html><html><head><style>b{}</style></head><body><script>1</script></body></html>")})
+	h.register()
+	return h
+}
+
+func (h *harness) register() map[string]any {
+	cfg := base64.StdEncoding.EncodeToString([]byte("enabled: true\npriority: 0\ndata_dir: " + h.dir + "\n"))
+	return h.call("plugin.register", `{"config_yaml":"`+cfg+`","schema_version":10}`)
+}
+
+func (h *harness) call(method, raw string) map[string]any {
+	h.t.Helper()
+	var env struct {
+		OK     bool           `json:"ok"`
+		Result map[string]any `json:"result"`
+	}
+	out := h.p.Call(method, []byte(raw))
+	if err := json.Unmarshal(out, &env); err != nil || !env.OK {
+		h.t.Fatalf("%s: %s", method, out)
+	}
+	return env.Result
+}
+
+type reply struct {
+	Status  int
+	Headers http.Header
+	Body    []byte
+}
+
+func (h *harness) do(method, path string, query url.Values, body any) reply {
+	h.t.Helper()
+	req := map[string]any{"Method": method, "Path": path, "Query": query, "Headers": map[string][]string{"Authorization": {"Bearer " + managementKy}}, "host_callback_id": "cb-test"}
+	if body != nil {
+		b, _ := json.Marshal(body)
+		req["Body"] = b
+	}
+	raw, _ := json.Marshal(req)
+	var env struct {
+		OK     bool `json:"ok"`
+		Result struct {
+			StatusCode int
+			Headers    http.Header
+			Body       []byte
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(h.p.Call("management.handle", raw), &env); err != nil || !env.OK {
+		h.t.Fatalf("management.handle failed")
+	}
+	return reply{env.Result.StatusCode, env.Result.Headers, env.Result.Body}
+}
+
+func (r reply) json(t *testing.T) map[string]any {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal(r.Body, &m); err != nil {
+		t.Fatalf("body %q: %v", r.Body, err)
+	}
+	return m
+}
+
+func (h *harness) create(u *upstream, name, cred string, threshold *float64) string {
+	h.t.Helper()
+	in := map[string]any{"name": name, "base_url": u.URL + "/", "credential": cred, "low_balance_threshold": threshold}
+	if !strings.HasPrefix(cred, "nap_") {
+		in["user_id"] = "42"
+	}
+	r := h.do("POST", RoutePrefix+"/accounts", nil, in)
+	if r.Status != http.StatusCreated {
+		h.t.Fatalf("create: %d %s", r.Status, r.Body)
+	}
+	return r.json(h.t)["account"].(map[string]any)["id"].(string)
+}
+
+func (h *harness) overview(q url.Values) []map[string]any {
+	h.t.Helper()
+	r := h.do("GET", RoutePrefix+"/overview", q, nil)
+	if r.Status != 200 {
+		h.t.Fatalf("overview: %d %s", r.Status, r.Body)
+	}
+	var out []map[string]any
+	for _, a := range r.json(h.t)["accounts"].([]any) {
+		out = append(out, a.(map[string]any))
+	}
+	return out
+}
+
+func assertNoSecrets(t *testing.T, where string, text string) {
+	t.Helper()
+	for _, s := range []string{secretPAT, secretLegacy, managementKy} {
+		if strings.Contains(text, s) {
+			t.Fatalf("%s contains a full secret", where)
+		}
+	}
+}
+
+func ptr(v float64) *float64 { return &v }
+
+func TestRegistrationDeclaresOnlyManagementAPI(t *testing.T) {
+	h := newHarness(t)
+	reg := h.register()
+	if reg["schema_version"] != float64(6) {
+		t.Fatalf("schema_version = %v", reg["schema_version"])
+	}
+	caps := reg["capabilities"].(map[string]any)
+	if len(caps) != 1 || caps["management_api"] != true {
+		t.Fatalf("capabilities = %v", caps)
+	}
+	fields := reg["metadata"].(map[string]any)["ConfigFields"].([]any)
+	if len(fields) != 1 || fields[0].(map[string]any)["Name"] != "data_dir" {
+		t.Fatalf("config fields = %v", fields)
+	}
+	mr := h.call("management.register", `{"BasePath":"/v0/management","ResourceBasePath":"/v0/resource/plugins/newapi-meter"}`)
+	res := mr["resources"].([]any)
+	if len(res) != 1 || res[0].(map[string]any)["Menu"] != MenuName || res[0].(map[string]any)["Path"] != PagePath {
+		t.Fatalf("resources = %v", res)
+	}
+	if len(mr["routes"].([]any)) != len(Routes) {
+		t.Fatalf("routes = %v", mr["routes"])
+	}
+}
+
+func TestResourceRouteServesOnlyThePage(t *testing.T) {
+	h := newHarness(t)
+	u := newUpstream(t)
+	h.create(u, "A", secretPAT, nil)
+	h.overview(nil)
+	r := h.do("GET", PagePath, url.Values{"force": {"1"}, "id": {"x"}}, nil)
+	if r.Status != 200 || r.Headers.Get("Content-Type") != "text/html; charset=utf-8" || !bytes.Equal(r.Body, h.p.page) {
+		t.Fatalf("page: %d %v %q", r.Status, r.Headers, r.Body)
+	}
+	csp := r.Headers.Get("Content-Security-Policy")
+	if !strings.Contains(csp, "script-src 'sha256-") || !strings.Contains(csp, "connect-src 'self'") || !strings.Contains(csp, "frame-ancestors 'self'") {
+		t.Fatalf("csp = %q", csp)
+	}
+	if h.do("POST", PagePath, nil, nil).Status != http.StatusMethodNotAllowed {
+		t.Fatal("non-GET on the page route was served")
+	}
+	if h.do("GET", "/v0/resource/plugins/newapi-meter/accounts", nil, nil).Status != http.StatusNotFound {
+		t.Fatal("other resource paths are served")
+	}
+}
+
+func TestAccountRoutesMaskCredentials(t *testing.T) {
+	h := newHarness(t)
+	u := newUpstream(t)
+	id := h.create(u, "Legacy", secretLegacy, ptr(2))
+
+	list := h.do("GET", RoutePrefix+"/accounts", nil, nil)
+	assertNoSecrets(t, "list response", string(list.Body))
+	acc := list.json(t)["accounts"].([]any)[0].(map[string]any)
+	if acc["credential_masked"] == "" || acc["credential_kind"] != "legacy" || acc["base_url"] != u.URL || acc["proxy"] != "follow" {
+		t.Fatalf("account view = %v", acc)
+	}
+	if _, leaked := acc["credential"]; leaked {
+		t.Fatal("list returns a credential field")
+	}
+
+	// Blank credential keeps the stored one.
+	upd := h.do("PUT", RoutePrefix+"/accounts", nil, map[string]any{"id": id, "name": "Renamed", "base_url": u.URL, "user_id": "42", "low_balance_threshold": 3})
+	if upd.Status != 200 {
+		t.Fatalf("update: %d %s", upd.Status, upd.Body)
+	}
+	assertNoSecrets(t, "update response", string(upd.Body))
+	raw, _ := os.ReadFile(filepath.Join(h.dir, store.FileName))
+	if !strings.Contains(string(raw), secretLegacy) || !strings.Contains(string(raw), "Renamed") {
+		t.Fatal("update lost the credential or the new name")
+	}
+
+	bad := h.do("POST", RoutePrefix+"/accounts", nil, map[string]any{"name": "x", "base_url": "https://x.example.com", "credential": "legacy-without-user"})
+	if bad.Status != 400 || bad.json(t)["error"].(map[string]any)["field"] != "user_id" {
+		t.Fatalf("validation: %d %s", bad.Status, bad.Body)
+	}
+	if h.do("DELETE", RoutePrefix+"/accounts", url.Values{"id": {"acc_missing"}}, nil).Status != 404 {
+		t.Fatal("delete of a missing account did not 404")
+	}
+	if r := h.do("DELETE", RoutePrefix+"/accounts", url.Values{"id": {id}}, nil); r.Status != 200 {
+		t.Fatalf("delete: %d %s", r.Status, r.Body)
+	}
+	if n := len(h.do("GET", RoutePrefix+"/accounts", nil, nil).json(t)["accounts"].([]any)); n != 0 {
+		t.Fatalf("accounts after delete = %d", n)
+	}
+}
+
+// A custom account switched to built-in and back with blank secrets sends no
+// apiKey from before the detour, neither in a connection test nor in the
+// overview, and the built-in account lists no masked custom secrets.
+func TestSwitchingSourceDoesNotReuseCustomSecrets(t *testing.T) {
+	const oldKey = "sk-synthetic-old-custom-key-9004"
+	h := newHarness(t)
+	u := newUpstream(t)
+	var sent atomic.Value
+	sent.Store("")
+	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sent.Store(r.Header.Get("X-Key"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"left": 1}`))
+	}))
+	t.Cleanup(site.Close)
+	script := `({ request: { url: "{{baseUrl}}/q", headers: { "X-Key": "{{apiKey}}" } }, extractor: function (r) { return { remaining: r.left, unit: "USD" }; } })`
+	asCustom := func(id, key string) map[string]any {
+		return map[string]any{"id": id, "name": "C", "source": "custom", "custom_script": script, "proxy": "direct",
+			"custom_placeholders": map[string]any{"baseUrl": site.URL, "apiKey": key, "accessToken": "", "userId": ""}}
+	}
+	r := h.do("POST", RoutePrefix+"/accounts", nil, asCustom("", oldKey))
+	if r.Status != http.StatusCreated {
+		t.Fatalf("create %d %s", r.Status, r.Body)
+	}
+	id := r.json(t)["account"].(map[string]any)["id"].(string)
+
+	r = h.do("PUT", RoutePrefix+"/accounts", nil, map[string]any{"id": id, "name": "C", "source": "newapi", "base_url": u.URL, "credential": secretPAT, "proxy": "direct",
+		"custom_script": "", "custom_placeholders": map[string]any{"baseUrl": "", "apiKey": "", "accessToken": "", "userId": ""}})
+	if r.Status != 200 {
+		t.Fatalf("to built-in %d %s", r.Status, r.Body)
+	}
+	ph := h.do("GET", RoutePrefix+"/accounts", nil, nil).json(t)["accounts"].([]any)[0].(map[string]any)["custom_placeholders"].(map[string]any)
+	if ph["apiKeyMasked"] != "" || ph["accessTokenMasked"] != "" {
+		t.Fatalf("built-in account lists custom secrets: %v", ph)
+	}
+
+	if tr := h.do("POST", RoutePrefix+"/accounts/test", nil, asCustom(id, "")); tr.Status != 200 || sent.Load() != "" {
+		t.Fatalf("connection test: %d, site received X-Key %q", tr.Status, sent.Load())
+	}
+	if r := h.do("PUT", RoutePrefix+"/accounts", nil, asCustom(id, "")); r.Status != 200 {
+		t.Fatalf("back to custom %d %s", r.Status, r.Body)
+	}
+	h.overview(url.Values{"force": {"1"}})
+	if got := sent.Load(); got != "" {
+		t.Fatalf("overview sent X-Key %q from before the detour", got)
+	}
+
+	// Same source: a blank apiKey still keeps the stored one.
+	if r := h.do("PUT", RoutePrefix+"/accounts", nil, asCustom(id, "sk-synthetic-new-custom-key-9005")); r.Status != 200 {
+		t.Fatalf("set key %d %s", r.Status, r.Body)
+	}
+	if r := h.do("PUT", RoutePrefix+"/accounts", nil, asCustom(id, "")); r.Status != 200 {
+		t.Fatalf("keep key %d %s", r.Status, r.Body)
+	}
+	h.overview(url.Values{"force": {"1"}})
+	if got := sent.Load(); got != "sk-synthetic-new-custom-key-9005" {
+		t.Fatalf("same-source blank apiKey sent %q", got)
+	}
+}
+
+func TestOverviewAndLogsNeverContainSecrets(t *testing.T) {
+	h := newHarness(t)
+	ok := newUpstream(t)
+	echo := newUpstream(t)
+	echo.echo.Store(true)
+	h.create(ok, "Fine", secretPAT, ptr(100))
+	h.create(echo, "Echo", secretLegacy, nil)
+	r := h.do("GET", RoutePrefix+"/overview", nil, nil)
+	assertNoSecrets(t, "overview response", string(r.Body))
+	items := h.overview(nil)
+	if items[0]["state"] != "low" || items[0]["balance"] != float64(10) || items[0]["today_spend"] != float64(1) || items[0]["host"] == "" {
+		t.Fatalf("fine account = %v", items[0])
+	}
+	if items[1]["state"] != "needs_action" || items[1]["primary_failure"].(map[string]any)["code"] != "credential_invalid" {
+		t.Fatalf("echo account = %v", items[1])
+	}
+	logs := h.logs.String()
+	if !strings.Contains(logs, "site query failed") {
+		t.Fatalf("expected failure logs, got %q", logs)
+	}
+	assertNoSecrets(t, "plugin log", logs)
+	if strings.Contains(logs, "bad token") {
+		t.Fatal("plugin log contains an upstream response body")
+	}
+}
+
+func TestOverviewCacheForceAndCoalescing(t *testing.T) {
+	h := newHarness(t)
+	u := newUpstream(t)
+	id := h.create(u, "A", secretPAT, nil)
+
+	first := h.overview(nil)
+	if first[0]["cached"] != false || u.count("/api/user/self") != 1 {
+		t.Fatalf("first fetch: cached=%v hits=%d", first[0]["cached"], u.count("/api/user/self"))
+	}
+	h.clock.add(30 * time.Second)
+	if second := h.overview(nil); second[0]["cached"] != true || u.count("/api/user/self") != 1 {
+		t.Fatalf("within 60 s the site was asked again")
+	}
+	h.overview(url.Values{"force": {"1"}})
+	if u.count("/api/user/self") != 2 {
+		t.Fatalf("force did not bypass the cache")
+	}
+	h.clock.add(61 * time.Second)
+	h.overview(nil)
+	if u.count("/api/user/self") != 3 {
+		t.Fatalf("expired entry was served")
+	}
+	// Forcing another account id leaves this one cached.
+	h.overview(url.Values{"force": {"1"}, "id": {"acc_other"}})
+	if u.count("/api/user/self") != 3 {
+		t.Fatalf("force for another id refetched this account")
+	}
+	h.overview(url.Values{"force": {"1"}, "id": {id}})
+	if u.count("/api/user/self") != 4 {
+		t.Fatalf("force for this id did not refetch")
+	}
+
+	// Concurrent overview calls while a fetch is running share it.
+	u.delay.Store(int64(100 * time.Millisecond))
+	var wg sync.WaitGroup
+	for i := range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			q := url.Values{}
+			if i%2 == 0 {
+				q.Set("force", "1")
+			}
+			h.overview(q)
+		}()
+	}
+	wg.Wait()
+	if got := u.count("/api/user/self"); got != 5 {
+		t.Fatalf("concurrent overviews fetched %d times, want one more (5)", got)
+	}
+}
+
+// Across CPA-local midnight, the first overview of the new day queries the
+// site again instead of serving yesterday's today figures from the 60 s
+// cache; within the new day the cache and today's detail reuse it again.
+func TestOverviewTodayCacheEndsAtLocalMidnight(t *testing.T) {
+	h := newHarness(t)
+	u := newUpstream(t)
+	h.clock.t = time.Date(2026, 5, 2, 23, 59, 50, 0, time.FixedZone("UTC+8", 8*3600))
+	id := h.create(u, "A", secretPAT, nil)
+	if first := h.overview(nil); first[0]["cached"] != false || u.count("/api/log/self/stat") != 1 {
+		t.Fatalf("first: cached=%v stat hits=%d", first[0]["cached"], u.count("/api/log/self/stat"))
+	}
+	h.clock.add(5 * time.Second)
+	if same := h.overview(nil); same[0]["cached"] != true || u.count("/api/log/self/stat") != 1 {
+		t.Fatal("same day within 60 s was not served from cache")
+	}
+
+	h.clock.add(15 * time.Second) // 00:00:10 on 2026-05-03, 20 s after the first fetch
+	body := h.do("GET", RoutePrefix+"/overview", nil, nil).json(t)
+	a := body["accounts"].([]any)[0].(map[string]any)
+	if body["today_start"] != "2026-05-03T00:00:00+08:00" || a["cached"] != false || u.count("/api/log/self/stat") != 2 {
+		t.Fatalf("after midnight: today_start=%v cached=%v stat hits=%d", body["today_start"], a["cached"], u.count("/api/log/self/stat"))
+	}
+	if fetched, _ := time.Parse(time.RFC3339, a["fetched_at"].(string)); fetched.Before(time.Date(2026, 5, 3, 0, 0, 0, 0, time.FixedZone("UTC+8", 8*3600))) {
+		t.Fatalf("new day served a reading fetched at %v", fetched)
+	}
+
+	h.clock.add(10 * time.Second)
+	if again := h.overview(nil); again[0]["cached"] != true || u.count("/api/log/self/stat") != 2 {
+		t.Fatal("new day's reading was not cached")
+	}
+	if d := h.do("GET", RoutePrefix+"/detail", url.Values{"id": {id}}, nil); d.Status != 200 || d.json(t)["cached"] != true || u.count("/api/log/self/stat") != 2 {
+		t.Fatalf("today's detail did not reuse the overview reading: %d %s", d.Status, d.Body)
+	}
+}
+
+// A custom query's {{todayStart}} follows the CPA-local day: the first
+// overview after midnight runs the script again with the new day's start.
+func TestCustomTodayCacheEndsAtLocalMidnight(t *testing.T) {
+	h := newHarness(t)
+	zone := time.FixedZone("UTC+8", 8*3600)
+	h.clock.t = time.Date(2026, 5, 2, 23, 59, 50, 0, zone)
+	var hits atomic.Int32
+	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		// todaySpend echoes the {{todayStart}} the script sent, so the value names its day.
+		_, _ = w.Write([]byte(`{"from": ` + r.URL.Query().Get("from") + `}`))
+	}))
+	t.Cleanup(site.Close)
+	script := `({ request: { url: "{{baseUrl}}/q?from={{todayStart}}" }, extractor: function (r) { return { remaining: 1, unit: "USD", todaySpend: r.from }; } })`
+	if r := h.do("POST", RoutePrefix+"/accounts", nil, map[string]any{"name": "C", "source": "custom", "custom_script": script, "proxy": "direct",
+		"custom_placeholders": map[string]any{"baseUrl": site.URL}}); r.Status != http.StatusCreated {
+		t.Fatalf("create %d %s", r.Status, r.Body)
+	}
+	day := func(d int) float64 { return float64(time.Date(2026, 5, d, 0, 0, 0, 0, zone).Unix()) }
+	if first := h.overview(nil); first[0]["today_spend"] != day(2) || hits.Load() != 1 {
+		t.Fatalf("first: today_spend=%v hits=%d", first[0]["today_spend"], hits.Load())
+	}
+	h.clock.add(20 * time.Second)
+	if next := h.overview(nil); next[0]["cached"] != false || next[0]["today_spend"] != day(3) || hits.Load() != 2 {
+		t.Fatalf("after midnight: cached=%v today_spend=%v hits=%d", next[0]["cached"], next[0]["today_spend"], hits.Load())
+	}
+	h.clock.add(10 * time.Second)
+	if again := h.overview(nil); again[0]["cached"] != true || hits.Load() != 2 {
+		t.Fatal("new day's custom result was not cached")
+	}
+}
+
+func TestLastSuccessSurvivesLaterFailure(t *testing.T) {
+	h := newHarness(t)
+	u := newUpstream(t)
+	h.create(u, "A", secretPAT, nil)
+	first := h.overview(nil)
+	okAt := first[0]["last_success_at"]
+	if okAt == nil {
+		t.Fatal("no last success after a successful fetch")
+	}
+	u.echo.Store(true)
+	h.clock.add(2 * time.Minute)
+	later := h.overview(nil)
+	if later[0]["state"] != "needs_action" || later[0]["last_success_at"] != okAt {
+		t.Fatalf("later = %v", later[0])
+	}
+}
+
+func TestUnreadableDataFileIsReportedAndKept(t *testing.T) {
+	h := newHarness(t)
+	path := filepath.Join(h.dir, store.FileName)
+	content := []byte(`{"schema_version":99,"accounts":[]}`)
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range []reply{
+		h.do("GET", RoutePrefix+"/overview", nil, nil),
+		h.do("GET", RoutePrefix+"/accounts", nil, nil),
+		h.do("POST", RoutePrefix+"/accounts", nil, map[string]any{"name": "x", "base_url": "https://x.example.com", "credential": secretPAT}),
+	} {
+		e := r.json(t)["error"].(map[string]any)
+		if r.Status != http.StatusServiceUnavailable || e["code"] != "data_file_newer" || e["path"] != path {
+			t.Fatalf("response = %d %s", r.Status, r.Body)
+		}
+	}
+	got, _ := os.ReadFile(path)
+	if !bytes.Equal(got, content) {
+		t.Fatal("refused file was rewritten")
+	}
+}
+
+// A configured data_dir that other users can open (here a restored 0755
+// directory with a 0644 file) serves no account and queries no site; the
+// error names the directory and the reason the page explains.
+func TestDataDirOpenToOthersIsRefused(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits")
+	}
+	h := newHarness(t)
+	u := newUpstream(t)
+	h.create(u, "A", secretPAT, nil)
+	path := filepath.Join(h.dir, store.FileName)
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(h.dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(path)
+	for _, r := range []reply{
+		h.do("GET", RoutePrefix+"/overview", url.Values{"force": {"1"}}, nil),
+		h.do("GET", RoutePrefix+"/accounts", nil, nil),
+		h.do("POST", RoutePrefix+"/accounts", nil, map[string]any{"name": "x", "base_url": "https://x.example.com", "credential": secretPAT}),
+	} {
+		assertNoSecrets(t, "refusal", string(r.Body))
+		e := r.json(t)["error"].(map[string]any)
+		if r.Status != http.StatusServiceUnavailable || e["code"] != "data_file_unavailable" || e["reason"] != "dir_not_private" || e["path"] != h.dir {
+			t.Fatalf("response = %d %s", r.Status, r.Body)
+		}
+	}
+	if n := u.count("/api/user/self"); n != 0 {
+		t.Fatalf("site queried %d times from a refused directory", n)
+	}
+	after, _ := os.ReadFile(path)
+	if !bytes.Equal(after, before) {
+		t.Fatal("refused data file was rewritten")
+	}
+
+	if err := os.Chmod(h.dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if items := h.overview(nil); len(items) != 1 || items[0]["state"] != "ok" {
+		t.Fatalf("after chmod 700: %v", items)
+	}
+	if info, _ := os.Stat(path); info.Mode().Perm() != 0o600 {
+		t.Fatalf("data file %#o after use, want 0600", info.Mode().Perm())
+	}
+}
+
+func TestEmptyOverviewAndUnknownRoutes(t *testing.T) {
+	h := newHarness(t)
+	if items := h.overview(nil); len(items) != 0 {
+		t.Fatalf("items = %v", items)
+	}
+	body := h.do("GET", RoutePrefix+"/overview", nil, nil).json(t)
+	if body["timezone"] != "UTC+8" || body["today_start"] != "2026-05-02T00:00:00+08:00" {
+		t.Fatalf("overview meta = %v", body)
+	}
+	if h.do("GET", RoutePrefix+"/nope", nil, nil).Status != 404 {
+		t.Fatal("unknown route did not 404")
+	}
+	out := h.p.Call("executor.execute", []byte(`{}`))
+	if !bytes.Contains(out, []byte(`"ok":false`)) {
+		t.Fatalf("unsupported method answered %s", out)
+	}
+}
+
+func TestRelativeDataDirIsRejected(t *testing.T) {
+	h := newHarness(t)
+	cfg := base64.StdEncoding.EncodeToString([]byte("data_dir: relative/dir\n"))
+	h.call("plugin.reconfigure", `{"config_yaml":"`+cfg+`"}`)
+	r := h.do("GET", RoutePrefix+"/accounts", nil, nil)
+	if r.Status != http.StatusServiceUnavailable || r.json(t)["error"].(map[string]any)["code"] != "data_file_unavailable" {
+		t.Fatalf("response = %d %s", r.Status, r.Body)
+	}
+}

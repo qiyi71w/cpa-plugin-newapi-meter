@@ -1,0 +1,14 @@
+general.js and newapi.js are the "General" and "New API" usage-script
+templates of cc-switch, used unchanged as test fixtures.
+
+Source:   https://github.com/farion1231/cc-switch
+Commit:   721ca8e08c5233f41e9a79cc367d581ac1ec4bcd
+File:     src/components/UsageScriptModal.tsx (generatePresetTemplates)
+License:  MIT, Copyright (c) 2025 Jason Young; the full license text is in
+          the LICENSE file next to this notice.
+
+The templates are copied as cc-switch shows them to a user with the English
+locale: in the New API template the two translated strings
+${t("usageScript.defaultPlan")} and ${t("usageScript.queryFailedMessage")}
+are rendered as "Default Plan" and "Query failed" (src/i18n/locales/en.json).
+Nothing else was changed.
