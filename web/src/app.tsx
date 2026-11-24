@@ -44,14 +44,23 @@ export function App() {
   // The period stays selected when the user moves to another account.
   const [period, setPeriod] = useState<PeriodChoice>({ preset: "today" });
   const [refreshSeq, setRefreshSeq] = useState(0);
+  // Overview requests are numbered as they start. A response is shown only
+  // when it started after everything already shown and after the last
+  // account change (see leaveManage and onChanged), so a slow refresh can
+  // never bring back an old name or a deleted account.
+  const startedSeq = useRef(0);
+  const shownSeq = useRef(0);
 
   const load = async (opts: OverviewOptions) => {
     if (!key.current) {
       setPhase({ kind: "key", rejected: false });
       return;
     }
+    const seq = ++startedSeq.current;
     try {
       const ov = await getOverview(key.current, opts);
+      if (seq <= shownSeq.current) return;
+      shownSeq.current = seq;
       hasData.current = true;
       setData(ov);
       setRefreshFailed(false);
@@ -60,6 +69,8 @@ export function App() {
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) {
         unauthorized();
+      } else if (seq <= shownSeq.current) {
+        // A newer state is already shown; this request's failure is moot.
       } else if (hasData.current && !(e instanceof ApiError && e.body?.code?.startsWith("data_file_"))) {
         setRefreshFailed(true);
       } else {
@@ -107,6 +118,8 @@ export function App() {
     const changed = !!savedId || stale.current;
     stale.current = false;
     if (!changed) return;
+    // Overviews requested before the save answer with the old accounts.
+    shownSeq.current = startedSeq.current;
     // A first account has no tab yet: show loading rather than the empty state.
     if (!data || data.accounts.length === 0) setPhase({ kind: "loading" });
     setBusy({ all: true });
@@ -136,6 +149,8 @@ export function App() {
         onLeave={(id) => void leaveManage(id)}
         onChanged={() => {
           stale.current = true;
+          // Overviews requested before the deletion still list the account.
+          shownSeq.current = startedSeq.current;
         }}
         onUnauthorized={unauthorized}
       />
