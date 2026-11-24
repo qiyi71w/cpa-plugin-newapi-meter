@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -205,6 +206,22 @@ func TestTodaySpendAndTimePlaceholdersUseCPALocalZone(t *testing.T) {
 	}
 }
 
+// R3: the balance follows the first plan (USD) while today's spend comes from
+// the CNY plan, so it must be labelled CNY, not USD.
+func TestTodaySpendKeepsTheUnitOfItsPlan(t *testing.T) {
+	items, reason := decodeResult(`[{"unit":"USD","remaining":10},{"unit":"CNY","remaining":5,"todaySpend":7}]`)
+	if reason != nil {
+		t.Fatal(reason)
+	}
+	s := Summarize(Result{Items: items}, nil)
+	if s.Basis != BasisFirst || s.Currency.Code != "USD" || *s.Balance != 10 || *s.TodaySpend != 7 || s.TodayCurrency == nil || s.TodayCurrency.Code != "CNY" {
+		t.Fatalf("summary = %+v (currency %+v, today currency %+v)", s, s.Currency, s.TodayCurrency)
+	}
+	if s := Summarize(Result{Items: items[:1]}, nil); s.TodaySpend != nil || s.TodayCurrency != nil {
+		t.Fatalf("no todaySpend: %+v", s)
+	}
+}
+
 func TestInfiniteLoopIsInterruptedWithinTheQueryLimit(t *testing.T) {
 	srv := serveJSON(t, nil, `{}`)
 	rn, _ := newRunner()
@@ -230,6 +247,76 @@ func TestInfiniteLoopIsInterruptedWithinTheQueryLimit(t *testing.T) {
 	}))
 	t.Cleanup(slow.Close)
 	wantFailure(t, rn.Run(context.Background(), account(`({ request: { url: "{{baseUrl}}" }, extractor: function (r) { return r; } })`, slow.URL)), status.QueryTimeout, DiagRequestTimeout)
+}
+
+// Work the engine cannot interrupt (regexp backtracking, a native sort,
+// compiling a large source) still ends the query at its limit. Each case
+// takes several times limit+slack here (0.25-0.35 s), far longer under -race.
+func TestNonInterruptibleWorkEndsAtTheQueryLimit(t *testing.T) {
+	srv := serveJSON(t, nil, `{"s": "`+strings.Repeat("a", 23)+`!"}`)
+	rn, _ := newRunner()
+	rn.Timeout = 50 * time.Millisecond
+	const slack = 100 * time.Millisecond
+	for name, script := range map[string]string{
+		"regexp backtracking": `({ request: { url: "{{baseUrl}}" }, extractor: function (r) { /^(?=a)(a+)+$/.test(r.s); return { remaining: 1 }; } })`,
+		"native sort":         `({ request: { url: "{{baseUrl}}" }, extractor: function () { var n = 1 << 17, a = new Array(n); for (var i = 0; i < n; i++) a[i] = (i * 2654435761) % 1000003; a.sort(); return { remaining: 1 }; } })`,
+		"compiling":           "var z = " + strings.Repeat("1+", 16<<9) + "1;\n" + `({ request: { url: "{{baseUrl}}" }, extractor: function () { return { remaining: 1 }; } })`,
+	} {
+		a := account(script, srv.URL)
+		a.ID = name // separate accounts: each case leaves its work running
+		begin := time.Now()
+		r := rn.Run(context.Background(), a)
+		if took := time.Since(begin); took > rn.Timeout+slack {
+			t.Errorf("%s: returned after %v, limit %v", name, took, rn.Timeout)
+		}
+		wantFailure(t, r, status.QueryTimeout, "")
+	}
+}
+
+// stuckDoer ignores cancellation, like native work the engine cannot stop.
+type stuckDoer struct {
+	n       atomic.Int32
+	release chan struct{}
+}
+
+func (d *stuckDoer) Do(context.Context, outbound.Request) (*outbound.Response, error) {
+	d.n.Add(1)
+	<-d.release
+	return &outbound.Response{StatusCode: http.StatusOK, Body: []byte(`{"v": 1}`)}, nil
+}
+
+func TestOneAbandonedQueryPerAccount(t *testing.T) {
+	d := &stuckDoer{release: make(chan struct{})}
+	rn := &Runner{HTTP: d, Now: func() time.Time { return now }, Timeout: 100 * time.Millisecond}
+	a := account(`({ request: { url: "https://api.example.com" }, extractor: function (r) { return { remaining: r.v }; } })`, "")
+	a.ID = "acc_a"
+	other := a
+	other.ID = "acc_b"
+
+	wantFailure(t, rn.Run(context.Background(), a), status.QueryTimeout, DiagRequestTimeout)
+	// The first query is still stuck: later ones for the account wait for it
+	// within their own limit instead of starting more work.
+	for range 3 {
+		begin := time.Now()
+		wantFailure(t, rn.Run(context.Background(), a), status.QueryTimeout, DiagBusy)
+		if took := time.Since(begin); took > rn.Timeout+500*time.Millisecond {
+			t.Fatalf("waited %v, limit %v", took, rn.Timeout)
+		}
+	}
+	if n := d.n.Load(); n != 1 {
+		t.Fatalf("%d requests started for one account, want 1", n)
+	}
+	// Other accounts are not held up.
+	wantFailure(t, rn.Run(context.Background(), other), status.QueryTimeout, DiagRequestTimeout)
+	if n := d.n.Load(); n != 2 {
+		t.Fatalf("%d requests, want 2", n)
+	}
+	// Once the stuck work ends the account runs again.
+	close(d.release)
+	rn.Timeout = 5 * time.Second
+	if r := rn.Run(context.Background(), a); r.Failure != nil || *r.Items[0].Remaining != 1 {
+		t.Fatalf("after release: %+v %+v", r.Failure, r.Items)
+	}
 }
 
 func TestResponseLargerThanOneMiBIsRejected(t *testing.T) {
@@ -285,6 +372,59 @@ var present = names.filter(function (n) { return typeof globalThis[n] !== "undef
 	}
 	if trapped.Load() != 0 {
 		t.Fatalf("a script reached the network %d times", trapped.Load())
+	}
+}
+
+// vlq encodes one source-map Base64 VLQ value.
+func vlq(v int) string {
+	const digits = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+	u := v << 1
+	if v < 0 {
+		u = -v<<1 | 1
+	}
+	var s strings.Builder
+	for {
+		d := u & 31
+		u >>= 5
+		if u > 0 {
+			d |= 32
+		}
+		s.WriteByte(digits[d])
+		if u == 0 {
+			return s.String()
+		}
+	}
+}
+
+func TestSourceMapCommentsNeverReadFiles(t *testing.T) {
+	// A map that sends every column of lines 1-5 to line 777: if the engine
+	// read it, error positions would point there.
+	dir := t.TempDir()
+	mapPath := filepath.Join(dir, "sentinel.map")
+	line := strings.Repeat(","+vlq(1)+"AAA", 200)
+	sm := `{"version":3,"sources":["sentinel"],"names":[],"mappings":"` + vlq(0) + vlq(0) + vlq(776) + vlq(0) + line + strings.Repeat(";AAAA"+line, 4) + `"}`
+	if err := os.WriteFile(mapPath, []byte(sm), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	wd, _ := os.Getwd()
+	rel, err := filepath.Rel(wd, mapPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := serveJSON(t, nil, `{}`)
+	rn, _ := newRunner()
+	for _, ref := range []string{mapPath, "file://" + filepath.ToSlash(mapPath), filepath.ToSlash(rel)} {
+		for name, script := range map[string]string{
+			"top level":    "throw new Error(\"boom\")\n//# sourceMappingURL=" + ref,
+			"new Function": `({ request: { url: "{{baseUrl}}" }, extractor: function () { new Function("throw new Error('fn')\n//# sourceMappingURL=` + ref + `")(); } })`,
+			"eval":         `({ request: { url: "{{baseUrl}}" }, extractor: function () { (0, eval)("throw new Error('ev')\n//# sourceMappingURL=` + ref + `"); } })`,
+		} {
+			r := rn.Run(context.Background(), account(script, srv.URL))
+			wantFailure(t, r, status.ScriptError, DiagRuntime)
+			if strings.Contains(r.Message, "777") || strings.Contains(r.Message, "sentinel") {
+				t.Errorf("%s with %s: the map was read: %q", name, ref, r.Message)
+			}
+		}
 	}
 }
 
@@ -374,23 +514,65 @@ func TestScriptErrorsMaskSubstitutedSecrets(t *testing.T) {
 	}
 }
 
+// wantReason checks a failure the plugin explains with a reason code, never
+// with its own (English) text, so the page can word it in its language.
+func wantReason(t *testing.T, name string, r Result, want Reason) {
+	t.Helper()
+	if r.Reason == nil || *r.Reason != want || r.Message != "" {
+		t.Errorf("%s: reason %+v message %q, want %+v and no message", name, r.Reason, r.Message, want)
+	}
+}
+
+func TestUnusableConfigAndRequestReasons(t *testing.T) {
+	rn, d := newRunner()
+	for script, want := range map[string]struct {
+		diag   string
+		reason Reason
+	}{
+		`42`: {DiagRequest, Reason{Code: ReasonNotConfig}},
+		`({ extractor: function (r) { return r; } })`:                                                                  {DiagRequest, Reason{Code: ReasonRequestMissing}},
+		`({ request: { url: "https://api.example.com" } })`:                                                            {DiagRequest, Reason{Code: ReasonExtractorMissing}},
+		`({ request: { url: "https://api.example.com", headers: 1 }, extractor: function () {} })`:                     {DiagRequest, Reason{Code: ReasonHeadersType}},
+		`({ request: { url: "https://api.example.com", body: {} }, extractor: function () {} })`:                       {DiagRequest, Reason{Code: ReasonBodyType}},
+		`({ request: { url: "ftp://example.com/x" }, extractor: function (r) { return r; } })`:                         {DiagRequestScheme, Reason{Code: ReasonURLScheme}},
+		`({ request: { url: "/x" }, extractor: function (r) { return r; } })`:                                          {DiagRequestURL, Reason{Code: ReasonURLInvalid}},
+		`({ request: { url: "https://api.example.com", method: "GE T" }, extractor: function () {} })`:                 {DiagRequestMethod, Reason{Code: ReasonMethod}},
+		`({ request: { url: "https://api.example.com", headers: { "Bad Header": "v" } }, extractor: function () {} })`: {DiagRequestHeader, Reason{Code: ReasonHeaderName}},
+		`({ request: { url: "https://api.example.com", headers: { A: "a\nB: 1" } }, extractor: function () {} })`:      {DiagRequestHeader, Reason{Code: ReasonHeaderValue}},
+	} {
+		r := rn.Run(context.Background(), account(script, ""))
+		wantFailure(t, r, status.ScriptError, want.diag)
+		wantReason(t, script, r, want.reason)
+	}
+	if d.n.Load() != 0 {
+		t.Fatalf("%d requests were sent", d.n.Load())
+	}
+	// A thrown value that cannot be turned into text: the position remains.
+	r := rn.Run(context.Background(), account("\n  throw { toString: function () { throw 1; } }", ""))
+	wantFailure(t, r, status.ScriptError, DiagRuntime)
+	wantReason(t, "unprintable throw", r, Reason{Code: ReasonUncaught, Field: "script:2:3"})
+	// Engine and script text stays verbatim.
+	r = rn.Run(context.Background(), account(`throw new RangeError("quota gone")`, ""))
+	if r.Reason != nil || r.Message != "RangeError: quota gone at script:1:7" {
+		t.Fatalf("thrown error: %+v %q", r.Reason, r.Message)
+	}
+}
+
 func TestUnusableResultsAndResponses(t *testing.T) {
 	rn, _ := newRunner()
 	srv := serveJSON(t, nil, `{"v": 1}`)
-	for result, want := range map[string]string{
-		`undefined`:               "extractor must return",
-		`null`:                    "must be an object",
-		`[]`:                      "empty array",
-		`42`:                      "must be an object",
-		`{ remaining: "12" }`:     "result.remaining must be a number",
-		`[{}, { isValid: "no" }]`: "result[1].isValid must be a boolean",
-		`{ unit: 5 }`:             "result.unit must be a string",
+	for result, want := range map[string]Reason{
+		`undefined`:               {Code: ReasonResultMissing},
+		`null`:                    {Code: ReasonItemType, Field: "result"},
+		`[]`:                      {Code: ReasonResultEmpty},
+		`42`:                      {Code: ReasonItemType, Field: "result"},
+		`{ remaining: "12" }`:     {Code: ReasonNumberType, Field: "result.remaining"},
+		`[{}, { isValid: "no" }]`: {Code: ReasonBooleanType, Field: "result[1].isValid"},
+		`{ unit: 5 }`:             {Code: ReasonStringType, Field: "result.unit"},
 	} {
 		r := rn.Run(context.Background(), account(`({ request: { url: "{{baseUrl}}" }, extractor: function () { return `+result+`; } })`, srv.URL))
 		wantFailure(t, r, status.ScriptError, DiagResult)
-		if !strings.Contains(r.Message, want) {
-			t.Errorf("%s: message %q, want %q", result, r.Message, want)
-		}
+		wantReason(t, result, r, want)
 	}
 	// Null fields are absent fields.
 	r := rn.Run(context.Background(), account(`({ request: { url: "{{baseUrl}}" }, extractor: function () { return { remaining: null, unit: null, isValid: null }; } })`, srv.URL))

@@ -3,7 +3,7 @@
 import { currencyLabel, money, stamp } from "./format";
 import { t, tDynamic } from "./i18n";
 import { Icon } from "./icons";
-import type { ConnectionTest, Currency, CustomPlan, CustomView, Failure, OverviewAccount } from "./types";
+import type { ConnectionTest, Currency, CustomPlan, CustomView, Failure, OverviewAccount, ScriptReason } from "./types";
 
 /** Failures the user fixes by editing the script or its values rather than by waiting. */
 const EDIT_FAILURES: Record<string, true> = {
@@ -19,7 +19,8 @@ function failureTitle(f: Failure): string {
 }
 
 /** The next step for a custom query; built-in wording where it already fits. */
-function nextStep(code: string): string {
+function nextStep(code: string, diagnostic?: string): string {
+  if (diagnostic === "PREVIOUS_QUERY_RUNNING") return t("customNext.busy");
   return tDynamic(`customNext.${code}`, tDynamic(`next.${code}`, ""));
 }
 
@@ -66,9 +67,16 @@ function PlanTable(p: { plans: CustomPlan[] }) {
   );
 }
 
-/** Why a custom query failed: the script's own reason or error text, quoted. */
+/** The page's sentence for a failure the plugin explains itself. */
+export function reasonText(r: ScriptReason): string {
+  const key = r.code === "uncaught" && r.field ? "uncaught_at" : r.code;
+  return tDynamic(`custom.reason.${key}`, r.code).replace("{field}", r.field ?? "");
+}
+
+/** Why a custom query failed: the plugin's explanation, or the script's own reason or error text, quoted. */
 function Reason(p: { view: CustomView | undefined }) {
   const v = p.view;
+  if (v?.script_reason) return <p class="nm-quote-text">{reasonText(v.script_reason)}</p>;
   if (v?.script_error) {
     // The title already says the script failed; the engine's text follows as is.
     return <pre class="nm-quote-text nm-quote-text--code">{v.script_error}</pre>;
@@ -112,7 +120,7 @@ function Metrics(p: { a: OverviewAccount }) {
     balance,
     amountCell("used", t("metric.totalUsed"), a.total_used, a.currency),
     amountCell("total", t("custom.totalQuota"), view?.total_quota ?? null, a.currency),
-    amountCell("today", t("metric.todaySpend"), a.today_spend, a.currency),
+    amountCell("today", t("metric.todaySpend"), a.today_spend, a.today_spend_currency),
   ];
   return (
     <dl class="nm-metrics">
@@ -144,7 +152,7 @@ function NeedsAction(p: { a: OverviewAccount; refreshing: boolean; onRetry: () =
         {f ? failureTitle(f) : tDynamic(`failure.${code}`, code)}
       </p>
       <Reason view={a.custom} />
-      <p class="nm-alert-text">{nextStep(code)}</p>
+      <p class="nm-alert-text">{nextStep(code, f?.diagnostic)}</p>
       <p class="nm-alert-meta">
         <span>{a.last_success_at ? t("needs.lastSuccess", { when: stamp(a.last_success_at) }) : t("needs.neverSucceeded")}</span>
         {f && (
@@ -208,7 +216,7 @@ export function CustomTestResult(p: { r: ConnectionTest }) {
           </div>
           <div>
             <dt>{t("metric.todaySpend")}</dt>
-            <dd>{c?.today_spend == null ? t("custom.notProvided") : money(c.today_spend, r.currency)}</dd>
+            <dd>{c?.today_spend == null ? t("custom.notProvided") : money(c.today_spend, c.today_spend_currency)}</dd>
           </div>
           <div>
             <dt>{t("test.script.unit")}</dt>
@@ -227,7 +235,7 @@ export function CustomTestResult(p: { r: ConnectionTest }) {
         {failureTitle(f)}
       </p>
       <Reason view={c} />
-      <p class="nm-test-text">{nextStep(f.code)}</p>
+      <p class="nm-test-text">{nextStep(f.code, f.diagnostic)}</p>
       <p class="nm-test-meta">
         {t("needs.diagnostic")} <code class="nm-code">{f.diagnostic}</code>
       </p>

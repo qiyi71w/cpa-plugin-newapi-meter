@@ -17,22 +17,30 @@ export function countsTowardTotal(a: OverviewAccount): boolean {
 export interface Totals {
   currency: Currency;
   balance: number;
-  today: number;
+  /** today's spend of the counted accounts that have one in `currency`; null when none has */
+  today: number | null;
+  /** accounts left out of the total: partial, needs action, or balance unknown */
   excluded: number;
+  /** counted accounts left out of `today`: spend unknown or in another unit */
+  todayExcluded: number;
 }
 
 /** The "all accounts" cell appears when there are several accounts and every
- *  account that counts shares one display currency. */
+ *  account that counts shares one display currency. An unknown amount is
+ *  never added as 0: the account is left out and counted as excluded. */
 export function totals(accounts: OverviewAccount[]): Totals | null {
-  const counted = accounts.filter(countsTowardTotal);
+  const counted = accounts.filter((a) => countsTowardTotal(a) && a.balance != null);
   if (accounts.length < 2 || counted.length === 0) return null;
   const currency = counted[0].currency;
   if (!currency || !counted.every((a) => sameCurrency(a.currency, currency))) return null;
+  // Today's spend can be in another unit than the balance (custom queries).
+  const todays = counted.filter((a) => a.today_spend != null && sameCurrency(a.today_spend_currency, currency));
   return {
     currency,
     balance: counted.reduce((s, a) => s + (a.balance ?? 0), 0),
-    today: counted.reduce((s, a) => s + (a.today_spend ?? 0), 0),
+    today: todays.length ? todays.reduce((s, a) => s + (a.today_spend ?? 0), 0) : null,
     excluded: accounts.length - counted.length,
+    todayExcluded: counted.length - todays.length,
   };
 }
 

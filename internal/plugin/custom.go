@@ -22,7 +22,10 @@ type customView struct {
 	TotalQuota     *float64          `json:"total_quota"`
 	Plans          []planView        `json:"plans"`
 	InvalidMessage string            `json:"invalid_message,omitempty"`
-	ScriptError    string            `json:"script_error,omitempty"`
+	// ScriptError is the engine's or script's error text, masked; ScriptReason
+	// is a failure the plugin explains with a code the page words itself.
+	ScriptError  string              `json:"script_error,omitempty"`
+	ScriptReason *customquery.Reason `json:"script_reason,omitempty"`
 }
 
 // planView is one extractor item.
@@ -44,6 +47,8 @@ type customTest struct {
 	Balance    *float64 `json:"balance"`
 	TotalUsed  *float64 `json:"total_used"`
 	TodaySpend *float64 `json:"today_spend"`
+	// TodaySpendCurrency is the unit of the plan that provided today_spend.
+	TodaySpendCurrency *newapi.Currency `json:"today_spend_currency"`
 	customView
 }
 
@@ -54,6 +59,7 @@ func customViewOf(r customquery.Result, s customquery.Summary) customView {
 		Plans:          make([]planView, 0, len(r.Items)),
 		InvalidMessage: s.InvalidMessage,
 		ScriptError:    r.Message,
+		ScriptReason:   r.Reason,
 	}
 	for _, it := range r.Items {
 		c := customquery.Currency(it.Unit)
@@ -85,7 +91,7 @@ func (p *Plugin) customOverviewOf(ctx context.Context, a store.Account, force bo
 	})
 	sum := customquery.Summarize(r, a.LowBalanceThreshold)
 	item.State, item.Currency = sum.State, sum.Currency
-	item.Balance, item.TotalUsed, item.TodaySpend = sum.Balance, sum.TotalUsed, sum.TodaySpend
+	item.Balance, item.TotalUsed, item.TodaySpend, item.TodaySpendCurrency = sum.Balance, sum.TotalUsed, sum.TodaySpend, sum.TodayCurrency
 	if sum.State == status.NeedsAction {
 		item.PrimaryFailure = sum.Failure
 		item.Failures = sum.Probes

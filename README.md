@@ -12,7 +12,7 @@ CPA（CLIProxyAPI）原生插件。在 CPA WebUI 或 EasyCLIProxyAPI 的插件�
 ## 当前能力
 
 - 内置 new-api 数据来源：PAT（`nap_` 开头）只发 `Authorization: Bearer`；旧版访问令牌另外发 `New-Api-User: <用户 ID>`。
-- 金额按站点的显示货币换算（美元、人民币、自定义货币或 token 数）；所有能计入的账户显示货币一致时，页签带最左侧显示「全部账户合计」。
+- 金额按站点的显示货币换算（美元、人民币、自定义货币或 token 数）；所有能计入的账户显示货币一致时，页签带最左侧显示「全部账户合计」。只有正常和余额偏低、并且读到了余额的账户计入合计，其余账户注明「n 个账户未计入」；今日花费读不到或单位不同的账户不计入今日合计，合计后注明缺几个，一个都读不到时显示「今日花费无法合计」，不会当作 0。
 - 账户状态：正常、余额偏低、部分可用（部分数据读不到，例如余额被站点防护拦截）、需处理（凭据相关的查询全部失败），并给出失败原因和下一步。
 - 今日按 **CPA 所在机器的本地时区**从零点算起。
 - 账户详情可以选统计区间，显示区间花费、请求数、token 数、平均 RPM/TPM，以及按模型的花费分布、按时间的花费柱状图、调用趋势和按模型用量明细。
@@ -195,7 +195,7 @@ plugins:
 
 - 只有一项时，余额、累计已用、总额度就是这一项的值。
 - 有多项且 `unit` 全部相同时，余额是各项 `remaining` 之和，页签和详情标「合计」；`unit` 不同时取第一项，标「第一项」。累计已用和总额度按同样的规则取。
-- 今日花费取第一个提供 `todaySpend` 的项。
+- 今日花费取第一个提供 `todaySpend` 的项，按这一项的 `unit` 显示，可以和余额的单位不同（例如余额取第一项的美元，今日花费来自人民币套餐）。
 - 任何一项 `isValid` 为 `false` 时，账户进入「需处理」，显示第一个这样的项的 `invalidMessage`。
 - 自定义查询账户同样参与余额阈值判断，也计入「全部账户合计」：合计按单位字符串判断是否一致，所以 `unit: "USD"` 的账户和美元站点的内置账户可以合计。
 - 自定义查询账户没有统计区间和图表；详情显示余额、累计已用、总额度、今日花费和套餐表。
@@ -223,8 +223,8 @@ apiKey 和 accessToken 与账户凭据同样处理：保存后只显示打码值
 
 | 结果 | 含义 |
 |---|---|
-| 脚本出错（`script_error`） | 语法错误、运行时异常、`request` 不合法（例如不是 http/https 地址），或者 `extractor` 的返回值不符合上面的格式；页面显示引擎给出的报错 |
-| 查询超时（`query_timeout`） | 请求加脚本超过 10 秒，脚本被中断 |
+| 脚本出错（`script_error`） | 语法错误、运行时异常、`request` 不合法（例如不是 http/https 地址），或者 `extractor` 的返回值不符合上面的格式。引擎或脚本自己的报错原样显示；`request` 和返回值哪里不合格由插件判断，页面用当前语言说明 |
+| 查询超时（`query_timeout`） | 请求加脚本超过 10 秒（`SCRIPT_TIMEOUT`、`REQUEST_TIMEOUT`），或者这个账户上一次超时的查询还在后台运行（`PREVIOUS_QUERY_RUNNING`，见下文） |
 | 脚本报告账户不可用（`reported_invalid`） | `extractor` 返回了 `isValid: false` |
 | 响应异常（`bad_response`） | 2xx 响应不是 JSON，或者响应超过 1 MiB |
 | 站点无法访问 / 凭据无效 / 站点出错 等 | 请求失败或返回非 2xx，分类与内置来源相同 |
@@ -232,8 +232,9 @@ apiKey 和 accessToken 与账户凭据同样处理：保存后只显示打码值
 ### 限制与风险
 
 - 脚本运行在插件内嵌的纯 Go JavaScript 引擎里，只有 ECMAScript 内置对象：没有 `fetch`、`XMLHttpRequest`、`require`、`import`、`console`、定时器，也不能读写文件。脚本唯一能发出的请求是 `request` 描述的那一个，由插件代发。
-- 每次查询（请求加脚本执行）总时限 **10 秒**，超时会中断正在运行的脚本；响应最大 **1 MiB**。
+- 每次查询（请求加脚本执行）总时限 **10 秒**：到时查询立即返回「查询超时」，正在运行的脚本代码被中断；响应最大 **1 MiB**。
 - **脚本运行在 CPA 进程内，内存占用无法限制。** 一个故意或者写错的脚本可以在 10 秒内占用大量内存，影响 CPA 本身。只粘贴你信任的脚本；只有持有 Management Key 的人能保存脚本。
+- **引擎无法中断的工作会在超时后继续占用 CPU 和内存，直到它自己结束。** 编译很大的脚本、正则表达式回溯、对大数组排序等由引擎内置代码完成的工作中途停不下来：查询照样在 10 秒时返回，但这部分工作留在后台跑完。每个账户同一时间最多留下一个这样的查询：这个账户的新查询（刷新、测试脚本）会先等它结束，10 秒内没等到就返回 `PREVIOUS_QUERY_RUNNING`，不会再启动新的工作；还没保存的账户的测试脚本共用一个名额。
 - 请求和内置来源走同一个出站入口，代理选项的效果相同。
 - 和账户凭据一样，apiKey、accessToken 明文保存在插件的数据文件里（见「数据目录与备份」）。
 
@@ -330,11 +331,11 @@ plugins:
 
 `GET /accounts` 返回 `{"accounts": […], "data_file": "<数据文件路径>"}`：`data_file` 是数据文件 `accounts.json` 的绝对路径（管理视图在列表下显示它，方便备份）。列表中的账户：`id`、`order`、`name`、`source`、`base_url`、`credential_masked`、`credential_kind`（`pat` / `legacy`）、`user_id`、`low_balance_threshold`、`proxy`、`custom_script`、`custom_placeholders`（`baseUrl`、`userId`、`apiKeyMasked`、`accessTokenMasked`）。完整凭据从不出现在任何响应或插件日志里。
 
-概况（`overview`）中每个账户的主要字段：`state`（`ok` / `low` / `partial` / `needs_action`）、`currency`（`code` 为 `USD`/`CNY`/`CUSTOM`/`TOKENS`，自定义查询的其他单位为 `UNIT`，`symbol` 是单位原文）、`balance`、`total_used`、`today_spend`、`rpm`、`tpm`（读不到时为 `null`）、`low_balance_threshold`、`balance_failure` / `today_failure`（对应数字读不到的原因）、`primary_failure`（需处理时的主要原因）、`failures`（失败的接口）、`fetched_at`、`last_success_at`（CPA 本次运行中最近一次成功读取）、`cached`。顶层还有 `generated_at`、`today_start`（CPA 本机时区的今日零点）和 `timezone`。
+概况（`overview`）中每个账户的主要字段：`state`（`ok` / `low` / `partial` / `needs_action`）、`currency`（`code` 为 `USD`/`CNY`/`CUSTOM`/`TOKENS`，自定义查询的其他单位为 `UNIT`，`symbol` 是单位原文）、`balance`、`total_used`、`today_spend`、`rpm`、`tpm`（读不到时为 `null`）、`today_spend_currency`（`today_spend` 的单位，形状同 `currency`；`today_spend` 为 `null` 时也为 `null`；内置账户等于 `currency`，自定义查询账户是提供今日花费的那一项的单位）、`low_balance_threshold`、`balance_failure` / `today_failure`（对应数字读不到的原因）、`primary_failure`（需处理时的主要原因）、`failures`（失败的接口）、`fetched_at`、`last_success_at`（CPA 本次运行中最近一次成功读取）、`cached`。顶层还有 `generated_at`、`today_start`（CPA 本机时区的今日零点）和 `timezone`。
 
-自定义查询账户另有 `custom`：`balance_basis`（`sum` 合计 / `first` 第一项；只有一项时省略）、`total_quota`、`plans`（每项 `plan_name`、`extra`、`remaining`、`used`、`total`、`today_spend`、`unit`、`currency`、`is_valid`、`invalid_message`）、`invalid_message`（脚本报告不可用时）、`script_error`（脚本出错时的报错，已遮掉 apiKey 和 accessToken）。
+自定义查询账户另有 `custom`：`balance_basis`（`sum` 合计 / `first` 第一项；只有一项时省略）、`total_quota`、`plans`（每项 `plan_name`、`extra`、`remaining`、`used`、`total`、`today_spend`、`unit`、`currency`、`is_valid`、`invalid_message`）、`invalid_message`（脚本报告不可用时）、`script_error`（引擎或脚本给出的报错原文，已遮掉 apiKey 和 accessToken）、`script_reason`（插件自己判断出的脚本问题，代替 `script_error`：`code` 是稳定的原因代码，如 `url_scheme`、`header_name_invalid`、`field_not_number`；`field` 是涉及的字段，如 `result[1].remaining`，可省略）。
 
-测试连接（`accounts/test`）返回：`source`、`ok`（所有计入的查询都成功）、`state`（`ok` / `partial` / `needs_action`，不做余额阈值判断）、`credential_kind`、`site_version`、`currency`、`data_export`、`failure`（最需要处理的失败，成功时为 `null`）、`failures`（失败的接口）。自定义查询账户的测试（页面上的「测试脚本」）另返回 `custom`，字段同概况里的 `custom`，再加上 `balance`、`total_used`、`today_spend`。请求体的校验规则与保存相同，但不检查 `name` 和 `low_balance_threshold`；校验失败返回 400 `validation_failed`，`id` 不存在返回 404 `account_not_found`。
+测试连接（`accounts/test`）返回：`source`、`ok`（所有计入的查询都成功）、`state`（`ok` / `partial` / `needs_action`，不做余额阈值判断）、`credential_kind`、`site_version`、`currency`、`data_export`、`failure`（最需要处理的失败，成功时为 `null`）、`failures`（失败的接口）。自定义查询账户的测试（页面上的「测试脚本」）另返回 `custom`，字段同概况里的 `custom`，再加上 `balance`、`total_used`、`today_spend` 和 `today_spend_currency`。请求体的校验规则与保存相同，但不检查 `name` 和 `low_balance_threshold`；校验失败返回 400 `validation_failed`，`id` 不存在返回 404 `account_not_found`。
 
 账户详情（`detail`）的参数：`period` 为 `today`（默认）、`yesterday`、`7d`、`30d` 或 `custom`；`custom` 时 `start` 和 `end` 是 CPA 本机时区的日期 `YYYY-MM-DD`（含首尾两天）。不合法时返回 400 `validation_failed`，`field` 为 `period` / `start` / `end`，`reason` 除通用的 `required`、`invalid`、`unsupported` 外还有 `swapped`（结束早于开始）、`too_long`（超过 365 天）、`future`（晚于今天）；自定义查询账户返回 `field: "id"`、`reason: "unsupported"`。今日区间（包括起止都是今天的自定义区间）直接复用概况的今日查询和缓存，不再访问站点；其他区间各自缓存 60 秒，`force=1` 跳过缓存。响应字段：
 
@@ -344,7 +345,7 @@ plugins:
 - `usage_disabled`：站点未开启数据看板，此时 `usage` 和 `usage_failure` 都为 `null`。
 - `fetched_at`、`cached`。区间查询失败只出现在这些字段里，不影响概况中的账户状态。
 
-失败原因 `code`：`site_unreachable`（网络、DNS、TLS 错误或超时）、`legacy_token_retired`、`pat_scope_denied`、`credential_invalid`、`site_blocked`（站点返回 HTML 而不是 JSON）、`site_error`（5xx）、`bad_response`（其余无法使用的响应，包括 `success: false`），以及自定义查询的 `script_error`、`query_timeout`、`reported_invalid`。`diagnostic` 是可以安全展示的诊断代码，例如 `ACCESS_TOKEN_LEGACY_RETIRED`、`HTTP_401`、`HTML_RESPONSE`、`NETWORK_TIMEOUT`；自定义查询另有 `SCRIPT_SYNTAX`、`SCRIPT_RUNTIME`、`SCRIPT_REQUEST`、`REQUEST_URL`、`REQUEST_SCHEME`、`REQUEST_METHOD`、`REQUEST_HEADER`、`SCRIPT_RESULT`、`SCRIPT_TIMEOUT`、`REQUEST_TIMEOUT`、`IS_VALID_FALSE`、`INVALID_JSON`、`RESPONSE_TOO_LARGE`。
+失败原因 `code`：`site_unreachable`（网络、DNS、TLS 错误或超时）、`legacy_token_retired`、`pat_scope_denied`、`credential_invalid`、`site_blocked`（站点返回 HTML 而不是 JSON）、`site_error`（5xx）、`bad_response`（其余无法使用的响应，包括 `success: false`），以及自定义查询的 `script_error`、`query_timeout`、`reported_invalid`。`diagnostic` 是可以安全展示的诊断代码，例如 `ACCESS_TOKEN_LEGACY_RETIRED`、`HTTP_401`、`HTML_RESPONSE`、`NETWORK_TIMEOUT`；自定义查询另有 `SCRIPT_SYNTAX`、`SCRIPT_RUNTIME`、`SCRIPT_REQUEST`、`REQUEST_URL`、`REQUEST_SCHEME`、`REQUEST_METHOD`、`REQUEST_HEADER`、`SCRIPT_RESULT`、`SCRIPT_TIMEOUT`、`REQUEST_TIMEOUT`、`PREVIOUS_QUERY_RUNNING`、`IS_VALID_FALSE`、`INVALID_JSON`、`RESPONSE_TOO_LARGE`。
 
 错误响应形如 `{"error": {"code": "...", "field": "...", "reason": "...", "path": "..."}}`：`validation_failed`（带 `field` 和 `reason`）、`invalid_json`、`account_not_found`，以及数据文件相关的 `data_file_corrupt`、`data_file_newer`、`data_file_unavailable`（带 `path`，状态码 503）。`data_file_unavailable` 在目录或文件对其他用户开放时带 `reason`：`dir_not_private`（配置的数据目录给同组或其他用户留了权限，`path` 是该目录）或 `file_not_private`（数据文件无法收紧为 0600，`path` 是该文件）。另有三个与具体账户无关的错误：`invalid_request`（400，宿主转来的管理请求无法解析）、`method_not_allowed`（405，用 GET 以外的方法请求资源路由的页面）、`not_found`（404，没有与「方法 + 路径」匹配的路由）。
 
