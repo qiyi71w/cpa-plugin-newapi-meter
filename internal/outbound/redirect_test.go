@@ -317,6 +317,17 @@ func TestDirectNeverFollowsADowngradeAfterAnUpgrade(t *testing.T) {
 	}
 }
 
+func TestDirectFollowsAnIDNHostToItsASCIIForm(t *testing.T) {
+	start, _ := url.Parse("http://\u4f8b\u5b50.com/start")
+	rt := &routes{next: map[string]string{start.String(): "https://xn--fsqu00a.com/home"}}
+	cl := New(nil)
+	cl.direct.Transport = rt
+	resp, err := cl.Do(context.Background(), Request{URL: start.String(), Header: http.Header{"Authorization": {"Bearer " + redirAuthSecret}}, Proxy: Direct})
+	if err != nil || resp.StatusCode != http.StatusOK || len(rt.seen) != 2 || rt.seen[1] != "https://xn--fsqu00a.com/home" {
+		t.Fatalf("status %v err %v, requested %v; want the redirect to https://xn--fsqu00a.com/home followed", resp, err, rt.seen)
+	}
+}
+
 func TestSameSite(t *testing.T) {
 	cases := []struct {
 		from, to string
@@ -332,16 +343,29 @@ func TestSameSite(t *testing.T) {
 		{"http://a.example.com/x", "http://b.example.com/y", false},
 		{"http://a.example.com/x", "http://sub.a.example.com/y", false},
 		{"http://example.com/x", "http://a.example.com/y", false},
-		// Hosts compare the way the transport resolves them: ASCII case is
-		// ignored, anything else is compared exactly.
-		{"http://\u03c3.example/x", "http://\u03c2.example/y", false},     // σ / ς fold together but are different IDNA hosts
-		{"http://k.example/x", "http://\u212a.example/y", false},          // KELVIN SIGN folds to k
-		{"http://\u00e9.example/x", "http://\u00c9.example/y", false},     // not folded outside ASCII
-		{"http://\u00e9.example/x", "http://\u00e9.example/y", true},      // identical
-		{"http://[fe80::1%25eth0]/x", "http://[fe80::1%25ETH0]/y", false}, // zones are case-sensitive
+		// Hosts compare as the transport dials them: a non-ASCII name after
+		// IDNA Lookup conversion, then ignoring ASCII case; an IP literal as
+		// an address, its zone exactly.
+		{"http://\u4f8b\u5b50.com/x", "https://xn--fsqu00a.com/y", true}, // 例子.com upgraded to its punycode form
+		{"http://xn--fsqu00a.com/x", "http://\u4f8b\u5b50.com/y", true},
+		{"http://\u4f8b\u5b50.com/x", "http://XN--FSQU00A.COM/y", true},
+		{"http://\u4f8b\u5b50.com/x", "http://\u4f8b.com/y", false},
+		{"http://\u4f8b\u5b50.com/x", "http://xn--fsqu00a.com:8080/y", false},
+		{"http://\u03c3.example/x", "http://\u03c2.example/y", false}, // σ / ς fold together but are different IDNA hosts
+		{"http://k.example/x", "http://\u212a.example/y", true},       // IDNA maps KELVIN SIGN to k, so the transport dials k.example
+		{"http://\u00e9.example/x", "http://\u00c9.example/y", true},  // both are xn--9ca.example
+		{"http://\u00e9.example/x", "http://\u00e9.example/y", true},
+		{"http://\u00e9.example/x", "http://e.example/y", false},
+		{"http://a_b.\u4f8b\u5b50.com/x", "http://a_b.\u4f8b\u5b50.com/y", false}, // no IDNA form: refused even when identical
+		{"http://[fe80::1%25eth0]/x", "http://[fe80::1%25ETH0]/y", false},         // zones are case-sensitive
 		{"http://[fe80::1%25eth0]/x", "http://[fe80::1%25eth1]/y", false},
+		{"http://[fe80::1%25eth0]/x", "http://[fe80::1]/y", false},
 		{"http://[fe80::1%25eth0]/x", "http://[fe80::1%25eth0]/y", true},
+		{"http://[FE80::1%25eth0]/x", "http://[fe80::1%25eth0]/y", true},
 		{"http://[FE80::1]/x", "http://[fe80::1]/y", true},
+		{"http://[fe80::1]/x", "http://[fe80:0::0:1]/y", true},
+		{"http://[fe80::1]/x", "http://[fe80::2]/y", false},
+		{"http://127.0.0.1/x", "http://localhost/y", false},
 	}
 	for _, c := range cases {
 		from, _ := url.Parse(c.from)
