@@ -21,6 +21,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/dop251/goja"
+	"github.com/dop251/goja/parser"
 
 	"github.com/qiyi71w/cpa-plugin-newapi-meter/internal/newapi"
 	"github.com/qiyi71w/cpa-plugin-newapi-meter/internal/outbound"
@@ -184,12 +185,14 @@ type helpers struct {
 // run evaluates the script, sends its request and runs extractor. On
 // failure it returns the failure and the unmasked message for the page.
 func (rn *Runner) run(ctx context.Context, src string, proxy outbound.Proxy) ([]Item, *status.Failure, string) {
-	prg, err := goja.Compile(scriptName, src, false)
+	prg, err := compile(src)
 	if err != nil {
 		return nil, scriptFailure(DiagSyntax), err.Error()
 	}
 	vm := goja.New()
 	vm.SetMaxCallStackSize(maxCallSize)
+	// eval and new Function compile at run time with these options.
+	vm.SetParserOptions(parser.WithDisableSourceMaps)
 	stop := context.AfterFunc(ctx, func() { vm.Interrupt(errDeadline) })
 	defer stop()
 
@@ -232,6 +235,17 @@ func (rn *Runner) run(ctx context.Context, src string, proxy outbound.Proxy) ([]
 		return nil, scriptFailure(DiagResult), msg
 	}
 	return items, nil, ""
+}
+
+// compile parses the script without source maps: the parser's default
+// loader would read the file a //# sourceMappingURL comment names, and a
+// script must never cause file access.
+func compile(src string) (*goja.Program, error) {
+	ast, err := goja.Parse(scriptName, src, parser.WithDisableSourceMaps)
+	if err != nil {
+		return nil, err
+	}
+	return goja.CompileAST(ast, false)
 }
 
 func scriptFailure(diag string) *status.Failure {

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -285,6 +286,59 @@ var present = names.filter(function (n) { return typeof globalThis[n] !== "undef
 	}
 	if trapped.Load() != 0 {
 		t.Fatalf("a script reached the network %d times", trapped.Load())
+	}
+}
+
+// vlq encodes one source-map Base64 VLQ value.
+func vlq(v int) string {
+	const digits = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+	u := v << 1
+	if v < 0 {
+		u = -v<<1 | 1
+	}
+	var s strings.Builder
+	for {
+		d := u & 31
+		u >>= 5
+		if u > 0 {
+			d |= 32
+		}
+		s.WriteByte(digits[d])
+		if u == 0 {
+			return s.String()
+		}
+	}
+}
+
+func TestSourceMapCommentsNeverReadFiles(t *testing.T) {
+	// A map that sends every column of lines 1-5 to line 777: if the engine
+	// read it, error positions would point there.
+	dir := t.TempDir()
+	mapPath := filepath.Join(dir, "sentinel.map")
+	line := strings.Repeat(","+vlq(1)+"AAA", 200)
+	sm := `{"version":3,"sources":["sentinel"],"names":[],"mappings":"` + vlq(0) + vlq(0) + vlq(776) + vlq(0) + line + strings.Repeat(";AAAA"+line, 4) + `"}`
+	if err := os.WriteFile(mapPath, []byte(sm), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	wd, _ := os.Getwd()
+	rel, err := filepath.Rel(wd, mapPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := serveJSON(t, nil, `{}`)
+	rn, _ := newRunner()
+	for _, ref := range []string{mapPath, "file://" + filepath.ToSlash(mapPath), filepath.ToSlash(rel)} {
+		for name, script := range map[string]string{
+			"top level":    "throw new Error(\"boom\")\n//# sourceMappingURL=" + ref,
+			"new Function": `({ request: { url: "{{baseUrl}}" }, extractor: function () { new Function("throw new Error('fn')\n//# sourceMappingURL=` + ref + `")(); } })`,
+			"eval":         `({ request: { url: "{{baseUrl}}" }, extractor: function () { (0, eval)("throw new Error('ev')\n//# sourceMappingURL=` + ref + `"); } })`,
+		} {
+			r := rn.Run(context.Background(), account(script, srv.URL))
+			wantFailure(t, r, status.ScriptError, DiagRuntime)
+			if strings.Contains(r.Message, "777") || strings.Contains(r.Message, "sentinel") {
+				t.Errorf("%s with %s: the map was read: %q", name, ref, r.Message)
+			}
+		}
 	}
 }
 
