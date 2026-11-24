@@ -28,7 +28,10 @@ const zh = {
   "total.today": "今日 {amount}",
   "total.excludedOne": "{n} 个账户未计入",
   "total.excludedMany": "{n} 个账户未计入",
-  "total.excludedHint": "部分可用和需处理的账户不计入合计",
+  "total.excludedHint": "部分可用、需处理和读不到余额的账户不计入合计",
+  "total.todayPartial": "今日 {amount}（不含 {n} 个账户）",
+  "total.todayNone": "今日花费无法合计",
+  "total.todayHint": "今日花费读不到或单位不同的账户，没有计入今日合计",
 
   "credential.pat": "PAT",
   "credential.legacy": "旧版访问令牌",
@@ -352,7 +355,10 @@ const en: Record<MessageKey, string> = {
   "total.today": "Today {amount}",
   "total.excludedOne": "{n} account not counted",
   "total.excludedMany": "{n} accounts not counted",
-  "total.excludedHint": "Partial and needs-action accounts are left out of the total",
+  "total.excludedHint": "Partial and needs-action accounts, and accounts whose balance is unavailable, are left out of the total",
+  "total.todayPartial": "Today {amount} ({n} not included)",
+  "total.todayNone": "Today's spend not totaled",
+  "total.todayHint": "Accounts whose today's spend is unavailable or in another unit are left out of today's total",
 
   "credential.pat": "PAT",
   "credential.legacy": "Legacy access token",

@@ -65,5 +65,28 @@ describe("today's spend unit", () => {
     const tot = totals([mixed, acc({ id: "b", balance: 3, today_spend: 1 })]);
     expect(tot?.balance).toBe(13);
     expect(tot?.today).toBe(1);
+    expect(tot?.todayExcluded).toBe(1);
+  });
+});
+
+describe("all-accounts total with unknown amounts", () => {
+  test("R4a: no known today spend is not $0.00", () => {
+    const tot = totals([acc({ id: "a", balance: 5, today_spend: null, today_spend_currency: null }), acc({ id: "b", balance: 6, today_spend: null, today_spend_currency: null })]);
+    expect(tot).toMatchObject({ balance: 11, today: null, excluded: 0, todayExcluded: 2 });
+  });
+
+  test("R4b: an ok account without a balance is left out and reported", () => {
+    const tot = totals([acc({ id: "c", source: "custom", balance: null, today_spend: null, today_spend_currency: null }), acc({ id: "d", balance: 10, today_spend: 2 })]);
+    expect(tot).toMatchObject({ balance: 10, today: 2, excluded: 1, todayExcluded: 0 });
+  });
+
+  test("true zeros stay zero and complete totals stay complete", () => {
+    const tot = totals([acc({ id: "a", balance: 0, today_spend: 0 }), acc({ id: "b", balance: 2, today_spend: 0 })]);
+    expect(tot).toMatchObject({ balance: 2, today: 0, excluded: 0, todayExcluded: 0 });
+  });
+
+  test("partial and needs-action accounts are still left out", () => {
+    const tot = totals([acc({ id: "a", state: "partial", balance: 4 }), acc({ id: "b", state: "needs_action", balance: null }), acc({ id: "c", balance: 3, today_spend: 1 })]);
+    expect(tot).toMatchObject({ balance: 3, today: 1, excluded: 2, todayExcluded: 0 });
   });
 });

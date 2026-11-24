@@ -108,11 +108,19 @@ function TotalCell(p: { accounts: OverviewAccount[] }) {
   const tot = totals(p.accounts);
   if (!tot) return null;
   const n = tot.excluded;
+  const m = tot.todayExcluded;
+  const today =
+    tot.today == null
+      ? t("total.todayNone")
+      : m > 0
+        ? t("total.todayPartial", { amount: money(tot.today, tot.currency), n: m })
+        : t("total.today", { amount: money(tot.today, tot.currency) });
+  const hint = [n > 0 && t("total.excludedHint"), m > 0 && t("total.todayHint")].filter(Boolean).join("\n");
   return (
-    <div class="nm-total" title={n > 0 ? t("total.excludedHint") : undefined}>
+    <div class="nm-total" title={hint || undefined}>
       <span class="nm-total-label">{t("total.label")}</span>
       <span class="nm-tab-bal">{money(tot.balance, tot.currency)}</span>
-      <span class="nm-tab-sub">{t("total.today", { amount: money(tot.today, tot.currency) })}</span>
+      <span class="nm-tab-sub">{today}</span>
       {n > 0 && <span class="nm-total-note">{t(n === 1 ? "total.excludedOne" : "total.excludedMany", { n })}</span>}
     </div>
   );
