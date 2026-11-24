@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -140,8 +141,9 @@ func (s *Source) Fetch(ctx context.Context, a store.Account) Reading {
 	go func() { defer wg.Done(); rowsData, fData = s.get(ctx, a, EndpointData, q.Encode(), true) }()
 	wg.Wait()
 
+	hide := credentialHider(a)
 	if fStatus == nil {
-		r.Site, fStatus = parseSite(statusData)
+		r.Site, fStatus = parseSite(statusData, hide)
 	}
 	if fSelf == nil {
 		var v struct {
@@ -167,7 +169,7 @@ func (s *Source) Fetch(ctx context.Context, a store.Account) Reading {
 		}
 	}
 	if fData == nil {
-		r.Usage, fData = parseRows(rowsData)
+		r.Usage, fData = parseRows(rowsData, hide)
 	}
 	r.Probes = []status.Probe{
 		{Name: EndpointStatus, Failure: fStatus},
@@ -208,7 +210,17 @@ func (s *Source) get(ctx context.Context, a store.Account, path, rawQuery string
 	return status.ClassifyNewAPI(resp, err)
 }
 
-func parseSite(data json.RawMessage) (*Site, *status.Failure) {
+// credentialHider masks a's credential wherever a site echoes it inside a
+// string that reaches management responses and the page (site version,
+// currency symbol, model names).
+func credentialHider(a store.Account) func(string) string {
+	if a.Credential == "" {
+		return func(s string) string { return s }
+	}
+	return strings.NewReplacer(a.Credential, store.Mask(a.Credential)).Replace
+}
+
+func parseSite(data json.RawMessage, hide func(string) string) (*Site, *status.Failure) {
 	var v struct {
 		QuotaPerUnit               *float64 `json:"quota_per_unit"`
 		QuotaDisplayType           *string  `json:"quota_display_type"`
@@ -224,7 +236,7 @@ func parseSite(data json.RawMessage) (*Site, *status.Failure) {
 	}
 	s := &Site{DataExport: v.EnableDataExport, rate: 1}
 	if v.Version != nil {
-		s.Version = *v.Version
+		s.Version = hide(*v.Version)
 	}
 	display := "USD"
 	switch {
@@ -252,7 +264,7 @@ func parseSite(data json.RawMessage) (*Site, *status.Failure) {
 		}
 		symbol := "¤"
 		if v.CustomCurrencySymbol != nil && *v.CustomCurrencySymbol != "" {
-			symbol = *v.CustomCurrencySymbol
+			symbol = hide(*v.CustomCurrencySymbol)
 		}
 		s.Currency, s.rate = Currency{Code: "CUSTOM", Symbol: symbol}, *v.CustomCurrencyExchangeRate
 	default:

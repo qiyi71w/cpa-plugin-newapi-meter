@@ -204,7 +204,7 @@ type UsageRow struct {
 	Quota     float64
 }
 
-func parseRows(data json.RawMessage) ([]UsageRow, *status.Failure) {
+func parseRows(data json.RawMessage, hide func(string) string) ([]UsageRow, *status.Failure) {
 	var raw []struct {
 		ModelName *string  `json:"model_name"`
 		CreatedAt *float64 `json:"created_at"`
@@ -224,7 +224,7 @@ func parseRows(data json.RawMessage) ([]UsageRow, *status.Failure) {
 	rows := make([]UsageRow, len(raw))
 	for i, r := range raw {
 		if r.ModelName != nil {
-			rows[i].Model = *r.ModelName
+			rows[i].Model = hide(*r.ModelName)
 		}
 		rows[i].CreatedAt = int64(val(r.CreatedAt))
 		rows[i].Requests, rows[i].Tokens, rows[i].Quota = val(r.Count), val(r.TokenUsed), val(r.Quota)
@@ -409,8 +409,9 @@ func (s *Source) FetchPeriod(ctx context.Context, a store.Account, p Period) Per
 	go func() { defer wg.Done(); rowsData, fData = s.get(ctx, a, EndpointData, q.Encode(), true) }()
 	wg.Wait()
 
+	hide := credentialHider(a)
 	if fStatus == nil {
-		pr.Site, fStatus = parseSite(statusData)
+		pr.Site, fStatus = parseSite(statusData, hide)
 	}
 	if fStat == nil {
 		var v struct {
@@ -423,7 +424,7 @@ func (s *Source) FetchPeriod(ctx context.Context, a store.Account, p Period) Per
 		}
 	}
 	if fData == nil {
-		pr.Rows, fData = parseRows(rowsData)
+		pr.Rows, fData = parseRows(rowsData, hide)
 	}
 	pr.Probes = []status.Probe{
 		{Name: EndpointStatus, Failure: fStatus},

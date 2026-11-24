@@ -6,10 +6,13 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/qiyi71w/cpa-plugin-newapi-meter/internal/store"
 )
 
 // periodSite is a synthetic new-api site with usage rows that, like a site
@@ -293,5 +296,64 @@ func TestDetailRejectsInvalidRequests(t *testing.T) {
 	}
 	if s.count("/api/status") != 0 {
 		t.Fatal("an invalid request reached the site")
+	}
+}
+
+// A site may echo the credential inside successful data; no management
+// response carries it in full, while ordinary values come through as sent.
+func TestSiteEchoedCredentialIsMasked(t *testing.T) {
+	h := newHarness(t)
+	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if tok == "" {
+			tok = secretPAT // /api/status is not credentialed; echo it anyway
+		}
+		var data any
+		switch r.URL.Path {
+		case "/api/status":
+			data = map[string]any{"quota_per_unit": 500000, "quota_display_type": "CUSTOM", "custom_currency_exchange_rate": 1,
+				"custom_currency_symbol": "s-" + tok, "version": "v-" + tok, "enable_data_export": true}
+		case "/api/user/self":
+			data = map[string]any{"quota": 5000000, "used_quota": 1000000}
+		case "/api/log/self/stat":
+			data = map[string]any{"quota": 500000, "rpm": 2, "tpm": 900}
+		case "/api/data/self":
+			at := h.clock.now().Unix() - 60
+			data = []any{
+				map[string]any{"model_name": "m-" + tok, "created_at": at, "count": 1, "token_used": 10, "quota": 500},
+				map[string]any{"model_name": "model-a", "created_at": at, "count": 2, "token_used": 20, "quota": 1000},
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "data": data})
+	}))
+	t.Cleanup(site.Close)
+	id := h.createAt(site.URL, "echo")
+	masked := store.Mask(secretPAT)
+
+	ov := h.do("GET", RoutePrefix+"/overview", url.Values{"force": {"1"}}, nil)
+	today := h.do("GET", RoutePrefix+"/detail", url.Values{"id": {id}, "period": {"today"}}, nil)
+	week := h.do("GET", RoutePrefix+"/detail", url.Values{"id": {id}, "period": {"7d"}}, nil)
+	tc := h.do("POST", RoutePrefix+"/accounts/test", nil, map[string]any{"id": id, "source": "newapi", "base_url": site.URL, "credential": ""})
+	for _, r := range []struct {
+		where string
+		rep   reply
+		want  []string
+	}{
+		{"overview", ov, []string{`"v-` + masked, `"s-` + masked}},
+		{"today's detail", today, []string{`"m-` + masked, `"model-a"`, `"s-` + masked}},
+		{"7-day detail", week, []string{`"m-` + masked, `"model-a"`, `"s-` + masked}},
+		{"connection test", tc, []string{`"v-` + masked, `"s-` + masked}},
+	} {
+		body := string(r.rep.Body)
+		if r.rep.Status != 200 {
+			t.Fatalf("%s: %d %s", r.where, r.rep.Status, body)
+		}
+		assertNoSecrets(t, r.where, body)
+		for _, w := range r.want {
+			if !strings.Contains(body, w) {
+				t.Fatalf("%s lacks %s: %s", r.where, w, body)
+			}
+		}
 	}
 }
