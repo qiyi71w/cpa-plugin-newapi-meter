@@ -1,0 +1,186 @@
+name: CI
+
+# Every push builds and smoke-tests all six targets on native runners and
+# packages them exactly like a Release (placeholder version 0.0.0-ci.<run>),
+# uploaded as the run artifact newapi-meter_<version>. A v<semver> tag push
+# additionally publishes that same artifact as the GitHub Release.
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  GO_VERSION: "1.25"
+  BUN_VERSION: "1.3.14"
+  PYTHON_VERSION: "3.13"
+  # windows/arm64 cgo needs an aarch64 mingw C compiler; the runner image's gcc is x86_64.
+  LLVM_MINGW: llvm-mingw-20261117-ucrt-aarch64
+  LLVM_MINGW_URL: https://github.com/mstorsjo/llvm-mingw/releases/download/20261117/llvm-mingw-20261117-ucrt-aarch64.zip
+  LLVM_MINGW_SHA256: c7f56de1d7aca15196c19083a799205390397b8b87a825aec3485e1e4f3c2cdd
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  meta:
+    name: version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - id: version
+        run: echo "version=$(python3 scripts/package.py version "$GITHUB_REF" "$GITHUB_RUN_NUMBER")" >> "$GITHUB_OUTPUT"
+      - run: echo "package version ${{ steps.version.outputs.version }}"
+
+  checks:
+    name: web, go and registry checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun run test:web
+      - run: bun run build:web
+      - run: go vet ./...
+      - run: go test -race ./...
+      - run: python3 scripts/check_registry.py registry.json
+
+  build:
+    name: build ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: meta
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64, ext: so, arch: x64, runner: ubuntu-24.04 }
+          - { goos: linux, goarch: arm64, ext: so, arch: arm64, runner: ubuntu-24.04-arm }
+          - { goos: windows, goarch: amd64, ext: dll, arch: x64, runner: windows-2025 }
+          - { goos: windows, goarch: arm64, ext: dll, arch: arm64, runner: windows-11-arm, llvm_mingw: true }
+          - { goos: darwin, goarch: amd64, ext: dylib, arch: x64, runner: macos-15-intel }
+          - { goos: darwin, goarch: arm64, ext: dylib, arch: arm64, runner: macos-15 }
+    env:
+      GOOS: ${{ matrix.goos }}
+      GOARCH: ${{ matrix.goarch }}
+      VERSION: ${{ needs.meta.outputs.version }}
+      # Go 1.25 supports macOS 12+; keep the dylib loadable there.
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          architecture: ${{ matrix.arch }}
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          architecture: ${{ matrix.arch }}
+      - name: Install llvm-mingw (aarch64 C compiler for cgo)
+        if: matrix.llvm_mingw
+        shell: pwsh
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          $zip = Join-Path $env:RUNNER_TEMP "$env:LLVM_MINGW.zip"
+          Invoke-WebRequest -Uri $env:LLVM_MINGW_URL -OutFile $zip
+          if ((Get-FileHash -Algorithm SHA256 $zip).Hash -ne $env:LLVM_MINGW_SHA256) { throw "llvm-mingw sha256 mismatch" }
+          & "$env:SystemRoot\System32\tar.exe" -xf $zip -C $env:RUNNER_TEMP
+          if ($LASTEXITCODE -ne 0) { throw "extracting llvm-mingw failed" }
+          Join-Path $env:RUNNER_TEMP "$env:LLVM_MINGW\bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+          "CC=aarch64-w64-mingw32-clang" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+      - name: Require a native toolchain (no cross-compiling)
+        run: |
+          host="$(go env GOHOSTOS)/$(go env GOHOSTARCH)"
+          echo "go host $host, target $GOOS/$GOARCH, cc $(go env CC), python $(python -c 'import platform; print(platform.machine())')"
+          test "$host" = "$GOOS/$GOARCH"
+      - run: bun install --frozen-lockfile
+      - run: bun run build
+      - name: Smoke (load, register, management routes, shutdown)
+        run: python tests/native_abi.py "dist/$GOOS/$GOARCH/newapi-meter.${{ matrix.ext }}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: lib-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  package:
+    name: package
+    needs: [meta, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      VERSION: ${{ needs.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: lib-*
+          path: dist
+          merge-multiple: true
+      - run: python3 scripts/package.py pack "$VERSION" dist release
+      - run: python3 scripts/package.py verify "$VERSION" release
+      - uses: actions/upload-artifact@v7
+        with:
+          name: newapi-meter_${{ env.VERSION }}
+          path: release/
+          if-no-files-found: error
+
+  release:
+    name: publish release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [meta, checks, package]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    concurrency:
+      group: release-${{ github.ref }}
+      cancel-in-progress: false
+    env:
+      VERSION: ${{ needs.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: newapi-meter_${{ env.VERSION }}
+          path: release
+      - run: python3 scripts/package.py verify "$VERSION" release
+      - name: Publish the packaged artifact as the Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          flags=()
+          if [[ "$VERSION" == *-* ]]; then flags+=(--prerelease); fi
+          gh release create "$GITHUB_REF_NAME" release/* --verify-tag --title "$GITHUB_REF_NAME" --generate-notes "${flags[@]}"
