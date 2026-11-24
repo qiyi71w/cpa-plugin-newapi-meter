@@ -449,6 +449,9 @@ func TestRefusesToOverwriteUnreadableFile(t *testing.T) {
 		{"corrupt", `{"schema_version":1,"accounts":[`, FileCorrupt},
 		{"not an object", `[]`, FileCorrupt},
 		{"no schema version", `{"accounts":[]}`, FileCorrupt},
+		{"no account list", `{"schema_version":1}`, FileCorrupt},
+		{"null account list", `{"schema_version":1,"accounts":null}`, FileCorrupt},
+		{"newer schema without account list", `{"schema_version":2}`, FileNewer},
 		{"newer schema", `{"schema_version":2,"accounts":[],"future":true}`, FileNewer},
 	}
 	for _, tc := range cases {
@@ -473,6 +476,84 @@ func TestRefusesToOverwriteUnreadableFile(t *testing.T) {
 			got, _ := os.ReadFile(s.Path())
 			if string(got) != tc.content {
 				t.Fatalf("file was rewritten: %q", got)
+			}
+		})
+	}
+}
+
+// An empty account list is a valid file, unlike one with no list at all.
+func TestEmptyAccountListIsValid(t *testing.T) {
+	s := openTemp(t)
+	if err := os.WriteFile(s.Path(), []byte(`{"schema_version":1,"accounts":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if list, err := s.List(); err != nil || len(list) != 0 {
+		t.Fatalf("list = %+v %v", list, err)
+	}
+	if _, err := s.Create(patInput("first")); err != nil {
+		t.Fatal(err)
+	}
+	if list, err := s.List(); err != nil || len(list) != 1 {
+		t.Fatalf("list = %+v %v", list, err)
+	}
+}
+
+// Something other than a regular file at the data file's path (a directory,
+// or a symlink to one) is refused before anything about it is changed, and
+// no operation replaces it.
+func TestNonRegularDataFileIsRefused(t *testing.T) {
+	cases := []struct {
+		name string
+		// place puts a non-regular object at path and returns the object
+		// whose mode must stay unchanged.
+		place func(t *testing.T, path string) string
+	}{
+		{"directory", func(t *testing.T, path string) string {
+			if err := os.Mkdir(path, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			return path
+		}},
+		{"symlink to a directory", func(t *testing.T, path string) string {
+			if runtime.GOOS == "windows" {
+				t.Skip("symlinks need extra privileges on Windows")
+			}
+			target := filepath.Join(t.TempDir(), "elsewhere")
+			if err := os.Mkdir(target, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, path); err != nil {
+				t.Fatal(err)
+			}
+			return target
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := openTemp(t)
+			target := tc.place(t, s.Path())
+			if err := os.Chmod(target, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			check := func(op string, err error) {
+				var fe *FileError
+				if !errors.As(err, &fe) || fe.Kind != FileUnavailable || fe.Path != s.Path() {
+					t.Fatalf("%s: err = %v, want %s", op, err, FileUnavailable)
+				}
+			}
+			_, err := s.List()
+			check("list", err)
+			_, err = s.Create(patInput("x"))
+			check("create", err)
+			_, err = s.Update("acc_x", patInput("x"))
+			check("update", err)
+			check("delete", s.Delete("acc_x"))
+			info, err := os.Stat(target)
+			if err != nil || !info.IsDir() {
+				t.Fatalf("target replaced: %v %v", info, err)
+			}
+			if runtime.GOOS != "windows" && info.Mode().Perm() != 0o755 {
+				t.Fatalf("target mode %#o, want 0755 unchanged", info.Mode().Perm())
 			}
 		})
 	}
