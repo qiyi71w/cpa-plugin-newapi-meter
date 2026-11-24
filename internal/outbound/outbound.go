@@ -12,6 +12,12 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
+	"net/url"
+	"strings"
+
+	"golang.org/x/net/http/httpguts"
+	"golang.org/x/net/idna"
 )
 
 // Proxy is an account's proxy option.
@@ -112,11 +118,119 @@ type Client struct {
 
 // New returns a Client. Follow requests go through host; a nil host makes
 // them fail as network errors rather than silently going direct. The direct
-// transport ignores every proxy setting.
+// transport ignores every proxy setting and only follows redirects that stay
+// on the request's site (see checkRedirect).
 func New(host Host) *Client {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.Proxy = nil
-	return &Client{direct: &http.Client{Transport: t}, host: host}
+	return &Client{direct: &http.Client{Transport: t, CheckRedirect: checkRedirect}, host: host}
+}
+
+// maxRedirects matches net/http's default limit.
+const maxRedirects = 10
+
+// checkRedirect follows a redirect only while every hop stays on the site of
+// the original request and never goes from https back to http. net/http
+// rebuilds each hop from the original request, so following a redirect
+// elsewhere would hand that site the headers (all but a few), the body on
+// 307/308 and, through Referer, the original URL with its query. A redirect
+// that is not followed returns the 3xx response itself, which is classified
+// like any other non-2xx answer.
+func checkRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= maxRedirects {
+		return errors.New("stopped after 10 redirects")
+	}
+	last := via[len(via)-1].URL
+	if !sameSite(via[0].URL, req.URL) || (strings.EqualFold(last.Scheme, "https") && strings.EqualFold(req.URL.Scheme, "http")) {
+		return http.ErrUseLastResponse
+	}
+	return nil
+}
+
+// sameSite reports whether to is on the site of from: same scheme, host and
+// port, or the https upgrade of an http URL on its default port.
+func sameSite(from, to *url.URL) bool {
+	if !sameHost(from.Hostname(), to.Hostname()) {
+		return false
+	}
+	fs, ts := strings.ToLower(from.Scheme), strings.ToLower(to.Scheme)
+	fp, tp := port(from), port(to)
+	if fs == ts {
+		return fp == tp
+	}
+	return fs == "http" && ts == "https" && fp == "80" && tp == "443"
+}
+
+// sameHost reports whether a and b, URL host names without brackets or port,
+// are the same host. IP literals are compared first, as parsed addresses with
+// the zone exactly; an address never matches a name. Names must agree on
+// both the form the transport dials and the form net/http writes into Host,
+// so a redirect never reaches another virtual host on the same address.
+func sameHost(a, b string) bool {
+	ipa, errA := netip.ParseAddr(a)
+	ipb, errB := netip.ParseAddr(b)
+	if errA == nil || errB == nil {
+		return errA == nil && errB == nil && ipa == ipb
+	}
+	return a != "" && b != "" && sameForm(a, b, dialName) && sameForm(a, b, httpguts.PunycodeHostPort)
+}
+
+// dialName is the name net/http dials: a non-ASCII name after IDNA Lookup
+// conversion, which maps characters (é and É, U+212A and k) to one form.
+func dialName(h string) (string, error) {
+	if isASCII(h) {
+		return h, nil
+	}
+	return idna.Lookup.ToASCII(h)
+}
+
+// sameForm reports whether a and b convert to the same ASCII form, ignoring
+// ASCII case only (Unicode folding would equate σ/ς). A name that fails to
+// convert matches nothing.
+func sameForm(a, b string, form func(string) (string, error)) bool {
+	fa, err := form(a)
+	if err != nil {
+		return false
+	}
+	fb, err := form(b)
+	if err != nil || len(fa) != len(fb) || !isASCII(fa) || !isASCII(fb) {
+		return false
+	}
+	for i := range len(fa) {
+		if lowerASCII(fa[i]) != lowerASCII(fb[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func isASCII(s string) bool {
+	for i := range len(s) {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
+func lowerASCII(c byte) byte {
+	if 'A' <= c && c <= 'Z' {
+		return c + ('a' - 'A')
+	}
+	return c
+}
+
+func port(u *url.URL) string {
+	if p := u.Port(); p != "" {
+		return p
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http":
+		return "80"
+	case "https":
+		return "443"
+	}
+	return ""
 }
 
 // Do sends req with the transport its Proxy option selects: Direct uses the

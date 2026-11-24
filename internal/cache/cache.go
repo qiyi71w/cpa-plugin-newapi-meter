@@ -1,5 +1,11 @@
 // Package cache keeps each account's query results in memory for a short
 // time and merges concurrent queries for the same account into one fetch.
+//
+// A result older than the TTL is never served again, so the cache drops it:
+// at most once per TTL, a query sweeps out every result that is past its TTL
+// and has no fetch running. Query names that carry a date (today's queries,
+// period ranges) therefore do not pile up across days: after any query, what
+// remains was fetched within the last two TTLs or is still being fetched.
 package cache
 
 import (
@@ -41,11 +47,26 @@ type Cache[V any] struct {
 	now   func() time.Time
 	mu    sync.Mutex
 	slots map[[2]string]*slot[V]
+	swept time.Time // last sweep of expired slots
 }
 
 // New returns a cache with the given TTL and clock.
 func New[V any](ttl time.Duration, now func() time.Time) *Cache[V] {
 	return &Cache[V]{ttl: ttl, now: now, slots: map[[2]string]*slot[V]{}}
+}
+
+// sweep drops slots that can no longer serve anything: no fetch running and
+// no value younger than the TTL. It runs at most once per TTL; c.mu is held.
+func (c *Cache[V]) sweep(now time.Time) {
+	if now.Sub(c.swept) < c.ttl {
+		return
+	}
+	c.swept = now
+	for id, s := range c.slots {
+		if s.inflight == nil && (!s.has || now.Sub(s.at) >= c.ttl) {
+			delete(c.slots, id)
+		}
+	}
 }
 
 // Get returns a fresh cached value, or runs fetch. While a fetch for the key
@@ -55,6 +76,8 @@ func New[V any](ttl time.Duration, now func() time.Time) *Cache[V] {
 func (c *Cache[V]) Get(key Key, force bool, fetch func() V) (v V, at time.Time, hit bool) {
 	id := [2]string{key.Account, key.Query}
 	c.mu.Lock()
+	now := c.now()
+	c.sweep(now)
 	s := c.slots[id]
 	if s == nil || s.fingerprint != key.Fingerprint {
 		s = &slot[V]{fingerprint: key.Fingerprint}
@@ -65,7 +88,7 @@ func (c *Cache[V]) Get(key Key, force bool, fetch func() V) (v V, at time.Time, 
 		<-f.done
 		return f.val, f.at, false
 	}
-	if !force && s.has && c.now().Sub(s.at) < c.ttl {
+	if !force && s.has && now.Sub(s.at) < c.ttl {
 		v, at := s.val, s.at
 		c.mu.Unlock()
 		return v, at, true

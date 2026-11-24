@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 )
@@ -76,7 +77,8 @@ type result struct {
 
 func (c *Client) doFollow(ctx context.Context, req Request) (*Response, error) {
 	method := req.method()
-	if _, err := http.NewRequestWithContext(ctx, method, req.URL, nil); err != nil {
+	hr, err := http.NewRequestWithContext(ctx, method, req.URL, nil)
+	if err != nil {
 		return nil, &Error{ErrRequest, errors.New("invalid request")}
 	}
 	if c.host == nil {
@@ -93,7 +95,7 @@ func (c *Client) doFollow(ctx context.Context, req Request) (*Response, error) {
 
 	done := make(chan result, 1)
 	go func() {
-		resp, err := c.runOperation(hostHTTPRequest{hostOperation: op, Method: method, URL: req.URL, Headers: req.Header, Body: req.Body}, req.limit())
+		resp, err := c.runOperation(hostHTTPRequest{hostOperation: op, Method: method, URL: req.URL, Headers: withOriginReferer(req.Header, hr.URL), Body: req.Body}, req.limit())
 		done <- result{resp, err}
 	}()
 	select {
@@ -108,6 +110,27 @@ func (c *Client) doFollow(ctx context.Context, req Request) (*Response, error) {
 		c.cancel(op)
 		return nil, classifyTransport(ctx, ctx.Err())
 	}
+}
+
+// withOriginReferer returns h with a Referer that names only the request's
+// origin, unless h already carries a non-empty one. The host follows every
+// redirect itself, and net/http fills an absent or empty Referer with the
+// previous hop's full URL, query included, on the way to wherever the site
+// redirects. Which other headers the host drops on a cross-origin redirect
+// depends on the CPA version (see README); the body on 307/308 always goes
+// along, which the plugin cannot change.
+func withOriginReferer(h http.Header, u *url.URL) http.Header {
+	if h.Get("Referer") != "" {
+		return h
+	}
+	out := make(http.Header, len(h)+1)
+	for k, vs := range h {
+		if !strings.EqualFold(k, "Referer") {
+			out[k] = vs
+		}
+	}
+	out["Referer"] = []string{strings.ToLower(u.Scheme) + "://" + u.Host + "/"}
+	return out
 }
 
 // runOperation sends the request as operation op and reads at most limit
