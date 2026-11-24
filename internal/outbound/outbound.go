@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"strings"
 
+	"golang.org/x/net/http/httpguts"
 	"golang.org/x/net/idna"
 )
 
@@ -160,37 +161,47 @@ func sameSite(from, to *url.URL) bool {
 	return fs == "http" && ts == "https" && fp == "80" && tp == "443"
 }
 
-// sameHost reports whether a and b are the host the transport dials (see
-// dialHost). A name without that form, such as one IDNA rejects, matches
-// nothing.
+// sameHost reports whether a and b, URL host names without brackets or port,
+// are the same host. IP literals are compared first, as parsed addresses with
+// the zone exactly; an address never matches a name. Names must agree on
+// both the form the transport dials and the form net/http writes into Host,
+// so a redirect never reaches another virtual host on the same address.
 func sameHost(a, b string) bool {
-	da, ok := dialHost(a)
-	if !ok {
-		return false
+	ipa, errA := netip.ParseAddr(a)
+	ipb, errB := netip.ParseAddr(b)
+	if errA == nil || errB == nil {
+		return errA == nil && errB == nil && ipa == ipb
 	}
-	db, ok := dialHost(b)
-	return ok && da == db
+	return a != "" && b != "" && sameForm(a, b, dialName) && sameForm(a, b, httpguts.PunycodeHostPort)
 }
 
-// dialHost returns a URL host name the way net/http dials it: a non-ASCII
-// name after IDNA Lookup conversion (so 例子.com is xn--fsqu00a.com), then an
-// IP literal as its parsed address with the zone kept exactly, and any other
-// name in lower case since DNS ignores ASCII case. Unicode case folding is
-// never used: it equates names such as σ/ς that IDNA keeps apart.
-func dialHost(h string) (string, bool) {
-	if !isASCII(h) {
-		var err error
-		if h, err = idna.Lookup.ToASCII(h); err != nil {
-			return "", false
+// dialName is the name net/http dials: a non-ASCII name after IDNA Lookup
+// conversion, which maps characters (é and É, U+212A and k) to one form.
+func dialName(h string) (string, error) {
+	if isASCII(h) {
+		return h, nil
+	}
+	return idna.Lookup.ToASCII(h)
+}
+
+// sameForm reports whether a and b convert to the same ASCII form, ignoring
+// ASCII case only (Unicode folding would equate σ/ς). A name that fails to
+// convert matches nothing.
+func sameForm(a, b string, form func(string) (string, error)) bool {
+	fa, err := form(a)
+	if err != nil {
+		return false
+	}
+	fb, err := form(b)
+	if err != nil || len(fa) != len(fb) || !isASCII(fa) || !isASCII(fb) {
+		return false
+	}
+	for i := range len(fa) {
+		if lowerASCII(fa[i]) != lowerASCII(fb[i]) {
+			return false
 		}
 	}
-	if h == "" {
-		return "", false
-	}
-	if ip, err := netip.ParseAddr(h); err == nil {
-		return ip.String(), true
-	}
-	return strings.ToLower(h), true
+	return true
 }
 
 func isASCII(s string) bool {
@@ -200,6 +211,13 @@ func isASCII(s string) bool {
 		}
 	}
 	return true
+}
+
+func lowerASCII(c byte) byte {
+	if 'A' <= c && c <= 'Z' {
+		return c + ('a' - 'A')
+	}
+	return c
 }
 
 func port(u *url.URL) string {

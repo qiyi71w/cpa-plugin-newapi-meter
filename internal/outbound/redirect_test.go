@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -328,6 +329,56 @@ func TestDirectFollowsAnIDNHostToItsASCIIForm(t *testing.T) {
 	}
 }
 
+// TestDirectIDNRedirectsFollowOnlyWhenTheSentHostMatches resolves every name
+// to one local server and records the Host header net/http writes, so the
+// check covers the form actually sent rather than the URL.
+func TestDirectIDNRedirectsFollowOnlyWhenTheSentHostMatches(t *testing.T) {
+	var mu sync.Mutex
+	var hosts []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hosts = append(hosts, r.Host+r.URL.Path)
+		mu.Unlock()
+		if loc := r.URL.Query().Get("to"); loc != "" {
+			http.Redirect(w, r, loc, http.StatusFound)
+			return
+		}
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	t.Cleanup(srv.Close)
+	_, port, _ := net.SplitHostPort(srv.Listener.Addr().String())
+	cases := []struct {
+		from, to string
+		status   int
+		hosts    []string
+	}{
+		{"\u4f8b\u5b50.test", "xn--fsqu00a.test", http.StatusOK, []string{"xn--fsqu00a.test:P/start", "xn--fsqu00a.test:P/done"}},
+		{"\u00e9.test", "\u00c9.test", http.StatusFound, []string{"xn--9ca.test:P/start"}}, // É.test is sent as xn--dca.test
+		{"k.test", "\u212a.test", http.StatusFound, []string{"k.test:P/start"}},            // K is sent as xn--62g.test
+	}
+	for _, c := range cases {
+		mu.Lock()
+		hosts = nil
+		mu.Unlock()
+		cl := New(nil)
+		tr := cl.direct.Transport.(*http.Transport)
+		tr.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, network, srv.Listener.Addr().String())
+		}
+		to := "http://" + c.to + ":" + port + "/done"
+		resp, err := cl.Do(context.Background(), Request{URL: "http://" + c.from + ":" + port + "/start?to=" + url.QueryEscape(to), Header: http.Header{"Authorization": {"Bearer " + redirAuthSecret}}, Proxy: Direct})
+		if err != nil {
+			t.Fatalf("%s -> %s: %v", c.from, c.to, err)
+		}
+		mu.Lock()
+		got := strings.ReplaceAll(strings.Join(hosts, " "), ":"+port+"/", ":P/")
+		mu.Unlock()
+		if resp.StatusCode != c.status || got != strings.Join(c.hosts, " ") {
+			t.Errorf("%s -> %s: status %d, requests %q; want %d and %q", c.from, c.to, resp.StatusCode, got, c.status, c.hosts)
+		}
+	}
+}
+
 func TestSameSite(t *testing.T) {
 	cases := []struct {
 		from, to string
@@ -343,17 +394,24 @@ func TestSameSite(t *testing.T) {
 		{"http://a.example.com/x", "http://b.example.com/y", false},
 		{"http://a.example.com/x", "http://sub.a.example.com/y", false},
 		{"http://example.com/x", "http://a.example.com/y", false},
-		// Hosts compare as the transport dials them: a non-ASCII name after
-		// IDNA Lookup conversion, then ignoring ASCII case; an IP literal as
-		// an address, its zone exactly.
+		// A name is the same host only when both the form the transport
+		// dials (IDNA Lookup) and the form net/http writes into Host
+		// (httpguts.PunycodeHostPort, no mapping) match, ignoring ASCII case.
+		// An IP literal compares as an address, its zone exactly.
 		{"http://\u4f8b\u5b50.com/x", "https://xn--fsqu00a.com/y", true}, // 例子.com upgraded to its punycode form
 		{"http://xn--fsqu00a.com/x", "http://\u4f8b\u5b50.com/y", true},
 		{"http://\u4f8b\u5b50.com/x", "http://XN--FSQU00A.COM/y", true},
 		{"http://\u4f8b\u5b50.com/x", "http://\u4f8b.com/y", false},
 		{"http://\u4f8b\u5b50.com/x", "http://xn--fsqu00a.com:8080/y", false},
 		{"http://\u03c3.example/x", "http://\u03c2.example/y", false}, // σ / ς fold together but are different IDNA hosts
-		{"http://k.example/x", "http://\u212a.example/y", true},       // IDNA maps KELVIN SIGN to k, so the transport dials k.example
-		{"http://\u00e9.example/x", "http://\u00c9.example/y", true},  // both are xn--9ca.example
+		// KELVIN SIGN dials k.example but is sent as Host: xn--62g.example,
+		// so another virtual host on that address would get the request.
+		{"http://k.example/x", "http://\u212a.example/y", false},
+		// é and É both dial xn--9ca.example but are sent as Host:
+		// xn--9ca.example and xn--dca.example.
+		{"http://\u00e9.example/x", "http://\u00c9.example/y", false},
+		{"http://\u00c9.example/x", "http://xn--9ca.example/y", false},
+		{"http://\u00e9.example/x", "http://xn--9ca.example/y", true},
 		{"http://\u00e9.example/x", "http://\u00e9.example/y", true},
 		{"http://\u00e9.example/x", "http://e.example/y", false},
 		{"http://a_b.\u4f8b\u5b50.com/x", "http://a_b.\u4f8b\u5b50.com/y", false}, // no IDNA form: refused even when identical
@@ -362,14 +420,24 @@ func TestSameSite(t *testing.T) {
 		{"http://[fe80::1%25eth0]/x", "http://[fe80::1]/y", false},
 		{"http://[fe80::1%25eth0]/x", "http://[fe80::1%25eth0]/y", true},
 		{"http://[FE80::1%25eth0]/x", "http://[fe80::1%25eth0]/y", true},
+		{"http://[fe80::1%25\u00e9]/x", "http://[fe80::1%25\u00e9]/y", true}, // a non-ASCII zone is still an address
+		{"http://[FE80::1%25\u00e9]/x", "http://[fe80:0::1%25\u00e9]/y", true},
+		{"http://[fe80::1%25\u00e9]/x", "http://[fe80::1%25\u00c9]/y", false},
 		{"http://[FE80::1]/x", "http://[fe80::1]/y", true},
 		{"http://[fe80::1]/x", "http://[fe80:0::0:1]/y", true},
 		{"http://[fe80::1]/x", "http://[fe80::2]/y", false},
 		{"http://127.0.0.1/x", "http://localhost/y", false},
+		{"http://[::1]/x", "http://localhost/y", false},
 	}
 	for _, c := range cases {
-		from, _ := url.Parse(c.from)
-		to, _ := url.Parse(c.to)
+		from, err := url.Parse(c.from)
+		if err != nil {
+			t.Fatal(err)
+		}
+		to, err := url.Parse(c.to)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if got := sameSite(from, to); got != c.want {
 			t.Errorf("sameSite(%s, %s) = %v, want %v", c.from, c.to, got, c.want)
 		}
