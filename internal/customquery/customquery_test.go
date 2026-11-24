@@ -273,6 +273,63 @@ func TestNonInterruptibleWorkEndsAtTheQueryLimit(t *testing.T) {
 	}
 }
 
+// Masking and clipping large script strings are part of the query: when the
+// script itself ends just inside the limit, the call still returns by the
+// limit. The limits lie between the script time and the script plus masking
+// time, so the deadline falls into the masking. Sizes stay small to keep the
+// suite fast; the larger sweep that shows the old overrun is in the review
+// evidence.
+func TestResultMaskingEndsAtTheQueryLimit(t *testing.T) {
+	srv := serveJSON(t, nil, `{}`)
+	rn, _ := newRunner()
+	script := `({ request: { url: "{{baseUrl}}" }, extractor: function () {
+  var s = "{{apiKey}}" + "x".repeat(2 << 20);
+  return { remaining: 1, unit: "USD", planName: s, extra: s, invalidMessage: s };
+} })`
+	a := account(script, srv.URL)
+	src := substitute(script, a.CustomPlaceholders, 0, 0)
+	var requesting atomic.Bool
+	fastest := func(f func()) time.Duration {
+		best := time.Duration(1<<63 - 1)
+		for range 2 {
+			begin := time.Now()
+			f()
+			best = min(best, time.Since(begin))
+		}
+		return best
+	}
+	rn.Timeout = time.Minute
+	work := fastest(func() { rn.run(context.Background(), src, outbound.Proxy(a.Proxy), &requesting) })
+	whole := max(fastest(func() { rn.Run(context.Background(), a) }), work+20*time.Millisecond)
+
+	const slack = 100 * time.Millisecond
+	for i := range 4 {
+		rn.Timeout = work + (whole-work)*time.Duration(i)/3
+		a.ID = strconv.Itoa(i) // its own slot: a late run must not hold up the next limit
+		begin := time.Now()
+		r := rn.Run(context.Background(), a)
+		if took := time.Since(begin); took > rn.Timeout+slack {
+			t.Errorf("limit %v (script %v, with masking %v): returned after %v", rn.Timeout, work, whole, took)
+		}
+		if r.Failure == nil && (!strings.HasPrefix(r.Items[0].PlanName, store.Mask(apiKey)) || strings.Contains(r.Items[0].PlanName, apiKey[:8]) || len(r.Items[0].PlanName) > 4*maxText) {
+			t.Errorf("limit %v: result not masked and clipped: %.40q", rn.Timeout, r.Items[0].PlanName)
+		}
+	}
+}
+
+func TestClipKeepsWholeRunes(t *testing.T) {
+	for _, c := range []struct{ in, want string }{
+		{strings.Repeat("中", maxText), strings.Repeat("中", maxText)},
+		{strings.Repeat("中", maxText+1), strings.Repeat("中", maxText) + "…"},
+		{"ab" + strings.Repeat("x", maxText), "ab" + strings.Repeat("x", maxText-2) + "…"},
+		{"", ""},
+	} {
+		if got := clip(c.in); got != c.want {
+			t.Errorf("clip(%d runes) = %d runes", len([]rune(c.in)), len([]rune(got)))
+		}
+	}
+}
+
 // stuckDoer ignores cancellation, like native work the engine cannot stop.
 type stuckDoer struct {
 	n       atomic.Int32

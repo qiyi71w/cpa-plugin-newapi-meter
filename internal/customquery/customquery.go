@@ -23,7 +23,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unicode/utf8"
 
 	"github.com/dop251/goja"
 	"github.com/dop251/goja/parser"
@@ -176,7 +175,9 @@ func (rn *Runner) Run(ctx context.Context, a store.Account) Result {
 	go func() {
 		defer release()
 		defer close(done)
-		out = rn.run(ctx, src, outbound.Proxy(a.Proxy), &requesting)
+		// Masking and clipping belong to the query: script strings can be
+		// large, so they too must finish within the limit or not be waited for.
+		out = m.sanitize(rn.run(ctx, src, outbound.Proxy(a.Proxy), &requesting))
 	}()
 	select {
 	case <-done:
@@ -193,20 +194,25 @@ func (rn *Runner) Run(ctx context.Context, a store.Account) Result {
 			return res
 		}
 	}
-	if out.Failure != nil {
-		res.Failure, res.Message, res.Reason = out.Failure, clip(m.mask(out.Message)), out.Reason
-		return res
+	res.Items, res.Failure, res.Message, res.Reason = out.Items, out.Failure, out.Message, out.Reason
+	return res
+}
+
+// sanitize masks the substituted secrets in every script-supplied string of
+// r and clips them.
+func (m masker) sanitize(r Result) Result {
+	if r.Failure != nil {
+		r.Message = clip(m.mask(r.Message))
+		return r
 	}
-	items := out.Items
-	for i := range items {
-		it := &items[i]
+	for i := range r.Items {
+		it := &r.Items[i]
 		it.InvalidMessage = clip(m.mask(it.InvalidMessage))
 		it.Unit = clip(m.mask(it.Unit))
 		it.PlanName = clip(m.mask(it.PlanName))
 		it.Extra = clip(m.mask(it.Extra))
 	}
-	res.Items = items
-	return res
+	return r
 }
 
 // acquire waits until no other query of the account is running, so work
@@ -687,13 +693,17 @@ func (m masker) mask(s string) string {
 }
 
 // clip bounds a script-supplied string; clipping happens after masking so a
-// cut can never expose part of a secret that masking would have hidden.
+// cut can never expose part of a secret that masking would have hidden. It
+// reads only as far as the bound.
 func clip(s string) string {
-	if utf8.RuneCountInString(s) <= maxText {
-		return s
+	n := 0
+	for i := range s {
+		if n == maxText {
+			return s[:i] + "…"
+		}
+		n++
 	}
-	r := []rune(s)
-	return string(r[:maxText]) + "…"
+	return s
 }
 
 // Basis says how the balance was formed from several items.
