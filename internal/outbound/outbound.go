@@ -12,6 +12,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
+	"strings"
 )
 
 // Proxy is an account's proxy option.
@@ -112,11 +114,59 @@ type Client struct {
 
 // New returns a Client. Follow requests go through host; a nil host makes
 // them fail as network errors rather than silently going direct. The direct
-// transport ignores every proxy setting.
+// transport ignores every proxy setting and only follows redirects that stay
+// on the request's site (see checkRedirect).
 func New(host Host) *Client {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.Proxy = nil
-	return &Client{direct: &http.Client{Transport: t}, host: host}
+	return &Client{direct: &http.Client{Transport: t, CheckRedirect: checkRedirect}, host: host}
+}
+
+// maxRedirects matches net/http's default limit.
+const maxRedirects = 10
+
+// checkRedirect follows a redirect only while every hop stays on the site of
+// the original request. net/http rebuilds each hop from the original
+// request, so following a redirect elsewhere would hand that site the
+// headers (all but a few), the body on 307/308 and, through Referer, the
+// original URL with its query. A redirect that leaves the site is not
+// followed: the 3xx response itself is returned and classified like any
+// other non-2xx answer.
+func checkRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= maxRedirects {
+		return errors.New("stopped after 10 redirects")
+	}
+	if !sameSite(via[0].URL, req.URL) {
+		return http.ErrUseLastResponse
+	}
+	return nil
+}
+
+// sameSite reports whether to is on the site of from: same scheme, host and
+// port, or the https upgrade of an http URL on its default port.
+func sameSite(from, to *url.URL) bool {
+	if !strings.EqualFold(from.Hostname(), to.Hostname()) || from.Hostname() == "" {
+		return false
+	}
+	fs, ts := strings.ToLower(from.Scheme), strings.ToLower(to.Scheme)
+	fp, tp := port(from), port(to)
+	if fs == ts {
+		return fp == tp
+	}
+	return fs == "http" && ts == "https" && fp == "80" && tp == "443"
+}
+
+func port(u *url.URL) string {
+	if p := u.Port(); p != "" {
+		return p
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http":
+		return "80"
+	case "https":
+		return "443"
+	}
+	return ""
 }
 
 // Do sends req with the transport its Proxy option selects: Direct uses the
