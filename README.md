@@ -218,7 +218,7 @@ apiKey 和 accessToken 与账户凭据同样处理：保存后只显示打码值
 | 结果 | 含义 |
 |---|---|
 | 脚本出错（`script_error`） | 语法错误、运行时异常、`request` 不合法（例如不是 http/https 地址），或者 `extractor` 的返回值不符合上面的格式；页面显示引擎给出的报错 |
-| 查询超时（`query_timeout`） | 请求加脚本超过 10 秒，脚本被中断 |
+| 查询超时（`query_timeout`） | 请求加脚本超过 10 秒（`SCRIPT_TIMEOUT`、`REQUEST_TIMEOUT`），或者这个账户上一次超时的查询还在后台运行（`PREVIOUS_QUERY_RUNNING`，见下文） |
 | 脚本报告账户不可用（`reported_invalid`） | `extractor` 返回了 `isValid: false` |
 | 响应异常（`bad_response`） | 2xx 响应不是 JSON，或者响应超过 1 MiB |
 | 站点无法访问 / 凭据无效 / 站点出错 等 | 请求失败或返回非 2xx，分类与内置来源相同 |
@@ -226,8 +226,9 @@ apiKey 和 accessToken 与账户凭据同样处理：保存后只显示打码值
 ### 限制与风险
 
 - 脚本运行在插件内嵌的纯 Go JavaScript 引擎里，只有 ECMAScript 内置对象：没有 `fetch`、`XMLHttpRequest`、`require`、`import`、`console`、定时器，也不能读写文件。脚本唯一能发出的请求是 `request` 描述的那一个，由插件代发。
-- 每次查询（请求加脚本执行）总时限 **10 秒**，超时会中断正在运行的脚本；响应最大 **1 MiB**。
+- 每次查询（请求加脚本执行）总时限 **10 秒**：到时查询立即返回「查询超时」，正在运行的脚本代码被中断；响应最大 **1 MiB**。
 - **脚本运行在 CPA 进程内，内存占用无法限制。** 一个故意或者写错的脚本可以在 10 秒内占用大量内存，影响 CPA 本身。只粘贴你信任的脚本；只有持有 Management Key 的人能保存脚本。
+- **引擎无法中断的工作会在超时后继续占用 CPU 和内存，直到它自己结束。** 编译很大的脚本、正则表达式回溯、对大数组排序等由引擎内置代码完成的工作中途停不下来：查询照样在 10 秒时返回，但这部分工作留在后台跑完。每个账户同一时间最多留下一个这样的查询：这个账户的新查询（刷新、测试脚本）会先等它结束，10 秒内没等到就返回 `PREVIOUS_QUERY_RUNNING`，不会再启动新的工作；还没保存的账户的测试脚本共用一个名额。
 - 请求和内置来源走同一个出站入口，代理选项的效果相同。
 - 和账户凭据一样，apiKey、accessToken 明文保存在插件的数据文件里（见「数据目录与备份」）。
 
@@ -334,7 +335,7 @@ plugins:
 - `usage_disabled`：站点未开启数据看板，此时 `usage` 和 `usage_failure` 都为 `null`。
 - `fetched_at`、`cached`。区间查询失败只出现在这些字段里，不影响概况中的账户状态。
 
-失败原因 `code`：`site_unreachable`（网络、DNS、TLS 错误或超时）、`legacy_token_retired`、`pat_scope_denied`、`credential_invalid`、`site_blocked`（站点返回 HTML 而不是 JSON）、`site_error`（5xx）、`bad_response`（其余无法使用的响应，包括 `success: false`），以及自定义查询的 `script_error`、`query_timeout`、`reported_invalid`。`diagnostic` 是可以安全展示的诊断代码，例如 `ACCESS_TOKEN_LEGACY_RETIRED`、`HTTP_401`、`HTML_RESPONSE`、`NETWORK_TIMEOUT`；自定义查询另有 `SCRIPT_SYNTAX`、`SCRIPT_RUNTIME`、`SCRIPT_REQUEST`、`REQUEST_URL`、`REQUEST_SCHEME`、`REQUEST_METHOD`、`REQUEST_HEADER`、`SCRIPT_RESULT`、`SCRIPT_TIMEOUT`、`REQUEST_TIMEOUT`、`IS_VALID_FALSE`、`INVALID_JSON`、`RESPONSE_TOO_LARGE`。
+失败原因 `code`：`site_unreachable`（网络、DNS、TLS 错误或超时）、`legacy_token_retired`、`pat_scope_denied`、`credential_invalid`、`site_blocked`（站点返回 HTML 而不是 JSON）、`site_error`（5xx）、`bad_response`（其余无法使用的响应，包括 `success: false`），以及自定义查询的 `script_error`、`query_timeout`、`reported_invalid`。`diagnostic` 是可以安全展示的诊断代码，例如 `ACCESS_TOKEN_LEGACY_RETIRED`、`HTTP_401`、`HTML_RESPONSE`、`NETWORK_TIMEOUT`；自定义查询另有 `SCRIPT_SYNTAX`、`SCRIPT_RUNTIME`、`SCRIPT_REQUEST`、`REQUEST_URL`、`REQUEST_SCHEME`、`REQUEST_METHOD`、`REQUEST_HEADER`、`SCRIPT_RESULT`、`SCRIPT_TIMEOUT`、`REQUEST_TIMEOUT`、`PREVIOUS_QUERY_RUNNING`、`IS_VALID_FALSE`、`INVALID_JSON`、`RESPONSE_TOO_LARGE`。
 
 错误响应形如 `{"error": {"code": "...", "field": "...", "reason": "...", "path": "..."}}`：`validation_failed`（带 `field` 和 `reason`）、`invalid_json`、`account_not_found`，以及数据文件相关的 `data_file_corrupt`、`data_file_newer`、`data_file_unavailable`（带 `path`，状态码 503）。另有三个与具体账户无关的错误：`invalid_request`（400，宿主转来的管理请求无法解析）、`method_not_allowed`（405，用 GET 以外的方法请求资源路由的页面）、`not_found`（404，没有与「方法 + 路径」匹配的路由）。
 

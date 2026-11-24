@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/qiyi71w/cpa-plugin-newapi-meter/internal/newapi"
+	"github.com/qiyi71w/cpa-plugin-newapi-meter/internal/outbound"
 	"github.com/qiyi71w/cpa-plugin-newapi-meter/internal/store"
 )
 
@@ -230,6 +232,84 @@ func TestTestScriptTimeout(t *testing.T) {
 	f := res["failure"].(map[string]any)
 	if st != 200 || res["ok"] != false || f["code"] != "query_timeout" || f["diagnostic"] != "SCRIPT_TIMEOUT" || res["state"] != "needs_action" {
 		t.Fatalf("timeout test = %d %v", st, res)
+	}
+}
+
+// The management calls return by the limit even when the script is stuck in
+// work the engine cannot interrupt: here regexp backtracking that takes
+// several times the limit (and far longer under -race).
+func TestCustomQueryCallsReturnByTheLimit(t *testing.T) {
+	h := newHarness(t)
+	h.p.custom.Timeout = 100 * time.Millisecond
+	site := newCustomSite(t, `{"s": "`+strings.Repeat("a", 23)+`!"}`)
+	in := customInput("Regex", site.URL, nil)
+	in["custom_script"] = `({ request: { url: "{{baseUrl}}" }, extractor: function (r) { /^(?=a)(a+)+$/.test(r.s); return { remaining: 1, unit: "USD" }; } })`
+	r := h.do("POST", RoutePrefix+"/accounts", nil, in)
+	if r.Status != http.StatusCreated {
+		t.Fatalf("create: %d %s", r.Status, r.Body)
+	}
+	in["id"] = r.json(t)["account"].(map[string]any)["id"]
+
+	begin := time.Now()
+	st, res := h.testConnection(in)
+	if took := time.Since(begin); took > h.p.custom.Timeout+time.Second {
+		t.Fatalf("test-script returned after %v", took)
+	}
+	if f, _ := res["failure"].(map[string]any); st != 200 || f["code"] != "query_timeout" || f["diagnostic"] != "SCRIPT_TIMEOUT" {
+		t.Fatalf("test-script = %d %v", st, res)
+	}
+	// The backtracking still runs: a forced refresh waits for it within its
+	// own limit, then reports it instead of starting a second one.
+	begin = time.Now()
+	items := h.overview(url.Values{"force": {"1"}})
+	if took := time.Since(begin); took > h.p.custom.Timeout+time.Second {
+		t.Fatalf("overview returned after %v", took)
+	}
+	if f, _ := items[0]["primary_failure"].(map[string]any); f["code"] != "query_timeout" || f["diagnostic"] != "PREVIOUS_QUERY_RUNNING" {
+		t.Fatalf("overview = %v", items[0])
+	}
+}
+
+// stuckDoer never answers until released, ignoring cancellation.
+type stuckDoer struct {
+	n       atomic.Int32
+	release chan struct{}
+}
+
+func (d *stuckDoer) Do(context.Context, outbound.Request) (*outbound.Response, error) {
+	d.n.Add(1)
+	<-d.release
+	return &outbound.Response{StatusCode: http.StatusOK, Body: []byte(`{"ok": true, "plans": []}`)}, nil
+}
+
+// Forced refreshes and test-script runs of an account whose query is still
+// stuck past its limit do not start more work.
+func TestStuckCustomQueryDoesNotPileUp(t *testing.T) {
+	h := newHarness(t)
+	d := &stuckDoer{release: make(chan struct{})}
+	t.Cleanup(func() { close(d.release) })
+	h.p.custom.HTTP, h.p.custom.Timeout = d, 200*time.Millisecond
+	acc := h.createCustom("Stuck", "https://api.example.com", nil)
+
+	diag := func(item map[string]any) any {
+		f, _ := item["primary_failure"].(map[string]any)
+		return f["diagnostic"]
+	}
+	if got := diag(h.overview(url.Values{"force": {"1"}})[0]); got != "REQUEST_TIMEOUT" {
+		t.Fatalf("first refresh: %v", got)
+	}
+	for range 3 {
+		if got := diag(h.overview(url.Values{"force": {"1"}})[0]); got != "PREVIOUS_QUERY_RUNNING" {
+			t.Fatalf("forced refresh: %v", got)
+		}
+	}
+	in := customInput("", "https://api.example.com", nil)
+	in["id"] = acc["id"]
+	if _, res := h.testConnection(in); res["failure"].(map[string]any)["diagnostic"] != "PREVIOUS_QUERY_RUNNING" {
+		t.Fatalf("test-script of the account: %v", res)
+	}
+	if n := d.n.Load(); n != 1 {
+		t.Fatalf("%d requests started, want 1", n)
 	}
 }
 

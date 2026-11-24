@@ -19,7 +19,8 @@ function failureTitle(f: Failure): string {
 }
 
 /** The next step for a custom query; built-in wording where it already fits. */
-function nextStep(code: string): string {
+function nextStep(code: string, diagnostic?: string): string {
+  if (diagnostic === "PREVIOUS_QUERY_RUNNING") return t("customNext.busy");
   return tDynamic(`customNext.${code}`, tDynamic(`next.${code}`, ""));
 }
 
@@ -144,7 +145,7 @@ function NeedsAction(p: { a: OverviewAccount; refreshing: boolean; onRetry: () =
         {f ? failureTitle(f) : tDynamic(`failure.${code}`, code)}
       </p>
       <Reason view={a.custom} />
-      <p class="nm-alert-text">{nextStep(code)}</p>
+      <p class="nm-alert-text">{nextStep(code, f?.diagnostic)}</p>
       <p class="nm-alert-meta">
         <span>{a.last_success_at ? t("needs.lastSuccess", { when: stamp(a.last_success_at) }) : t("needs.neverSucceeded")}</span>
         {f && (
@@ -227,7 +228,7 @@ export function CustomTestResult(p: { r: ConnectionTest }) {
         {failureTitle(f)}
       </p>
       <Reason view={c} />
-      <p class="nm-test-text">{nextStep(f.code)}</p>
+      <p class="nm-test-text">{nextStep(f.code, f.diagnostic)}</p>
       <p class="nm-test-meta">
         {t("needs.diagnostic")} <code class="nm-code">{f.diagnostic}</code>
       </p>

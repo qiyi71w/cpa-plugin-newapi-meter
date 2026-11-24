@@ -233,6 +233,76 @@ func TestInfiniteLoopIsInterruptedWithinTheQueryLimit(t *testing.T) {
 	wantFailure(t, rn.Run(context.Background(), account(`({ request: { url: "{{baseUrl}}" }, extractor: function (r) { return r; } })`, slow.URL)), status.QueryTimeout, DiagRequestTimeout)
 }
 
+// Work the engine cannot interrupt (regexp backtracking, a native sort,
+// compiling a large source) still ends the query at its limit. Each case
+// takes several times limit+slack here (0.25-0.35 s), far longer under -race.
+func TestNonInterruptibleWorkEndsAtTheQueryLimit(t *testing.T) {
+	srv := serveJSON(t, nil, `{"s": "`+strings.Repeat("a", 23)+`!"}`)
+	rn, _ := newRunner()
+	rn.Timeout = 50 * time.Millisecond
+	const slack = 100 * time.Millisecond
+	for name, script := range map[string]string{
+		"regexp backtracking": `({ request: { url: "{{baseUrl}}" }, extractor: function (r) { /^(?=a)(a+)+$/.test(r.s); return { remaining: 1 }; } })`,
+		"native sort":         `({ request: { url: "{{baseUrl}}" }, extractor: function () { var n = 1 << 17, a = new Array(n); for (var i = 0; i < n; i++) a[i] = (i * 2654435761) % 1000003; a.sort(); return { remaining: 1 }; } })`,
+		"compiling":           "var z = " + strings.Repeat("1+", 16<<9) + "1;\n" + `({ request: { url: "{{baseUrl}}" }, extractor: function () { return { remaining: 1 }; } })`,
+	} {
+		a := account(script, srv.URL)
+		a.ID = name // separate accounts: each case leaves its work running
+		begin := time.Now()
+		r := rn.Run(context.Background(), a)
+		if took := time.Since(begin); took > rn.Timeout+slack {
+			t.Errorf("%s: returned after %v, limit %v", name, took, rn.Timeout)
+		}
+		wantFailure(t, r, status.QueryTimeout, "")
+	}
+}
+
+// stuckDoer ignores cancellation, like native work the engine cannot stop.
+type stuckDoer struct {
+	n       atomic.Int32
+	release chan struct{}
+}
+
+func (d *stuckDoer) Do(context.Context, outbound.Request) (*outbound.Response, error) {
+	d.n.Add(1)
+	<-d.release
+	return &outbound.Response{StatusCode: http.StatusOK, Body: []byte(`{"v": 1}`)}, nil
+}
+
+func TestOneAbandonedQueryPerAccount(t *testing.T) {
+	d := &stuckDoer{release: make(chan struct{})}
+	rn := &Runner{HTTP: d, Now: func() time.Time { return now }, Timeout: 100 * time.Millisecond}
+	a := account(`({ request: { url: "https://api.example.com" }, extractor: function (r) { return { remaining: r.v }; } })`, "")
+	a.ID = "acc_a"
+	other := a
+	other.ID = "acc_b"
+
+	wantFailure(t, rn.Run(context.Background(), a), status.QueryTimeout, DiagRequestTimeout)
+	// The first query is still stuck: later ones for the account wait for it
+	// within their own limit instead of starting more work.
+	for range 3 {
+		begin := time.Now()
+		wantFailure(t, rn.Run(context.Background(), a), status.QueryTimeout, DiagBusy)
+		if took := time.Since(begin); took > rn.Timeout+500*time.Millisecond {
+			t.Fatalf("waited %v, limit %v", took, rn.Timeout)
+		}
+	}
+	if n := d.n.Load(); n != 1 {
+		t.Fatalf("%d requests started for one account, want 1", n)
+	}
+	// Other accounts are not held up.
+	wantFailure(t, rn.Run(context.Background(), other), status.QueryTimeout, DiagRequestTimeout)
+	if n := d.n.Load(); n != 2 {
+		t.Fatalf("%d requests, want 2", n)
+	}
+	// Once the stuck work ends the account runs again.
+	close(d.release)
+	rn.Timeout = 5 * time.Second
+	if r := rn.Run(context.Background(), a); r.Failure != nil || *r.Items[0].Remaining != 1 {
+		t.Fatalf("after release: %+v %+v", r.Failure, r.Items)
+	}
+}
+
 func TestResponseLargerThanOneMiBIsRejected(t *testing.T) {
 	body := func(n int) string { return `{"pad":"` + strings.Repeat("x", n-10) + `"}` }
 	script := `({ request: { url: "{{baseUrl}}" }, extractor: function (r) { return { remaining: r.pad.length, unit: "USD" }; } })`

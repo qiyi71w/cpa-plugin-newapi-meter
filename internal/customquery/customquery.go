@@ -5,8 +5,11 @@
 //
 // Scripts run in an embedded pure-Go JavaScript engine (goja) with no
 // network, file or module access: the runtime only has the ECMAScript
-// built-ins. Each query, request plus script, has one time limit; running
-// script code is interrupted when it passes. Memory cannot be limited.
+// built-ins. Each query, request plus script, has one time limit: the caller
+// gets its answer when it passes, running script code is interrupted, and
+// work the engine cannot interrupt (compiling, native built-ins) is left to
+// finish in the background, one such run per account at most. Memory cannot
+// be limited.
 package customquery
 
 import (
@@ -17,6 +20,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -57,7 +62,10 @@ const (
 	DiagResult         = "SCRIPT_RESULT"
 	DiagScriptTimeout  = "SCRIPT_TIMEOUT"
 	DiagRequestTimeout = "REQUEST_TIMEOUT"
-	DiagInvalid        = "IS_VALID_FALSE"
+	// DiagBusy: the account's previous query passed its limit inside work
+	// the engine cannot interrupt and is still running.
+	DiagBusy    = "PREVIOUS_QUERY_RUNNING"
+	DiagInvalid = "IS_VALID_FALSE"
 )
 
 // Item is one entry of the extractor result (CustomQueryItem). Absent and
@@ -96,10 +104,17 @@ type Runner struct {
 	Now func() time.Time
 	// Timeout bounds each query; zero means Timeout.
 	Timeout time.Duration
+
+	mu sync.Mutex
+	// busy holds, per account ID, a channel closed when that account's
+	// running query ends, including one its caller stopped waiting for.
+	// Unsaved accounts (test-script without an ID) share the empty ID.
+	busy map[string]chan struct{}
 }
 
 // Run queries account a once. It never returns an error: every failure is
-// classified into Result.Failure.
+// classified into Result.Failure. It returns by the time limit even when the
+// script is stuck in work the engine cannot interrupt.
 func (rn *Runner) Run(ctx context.Context, a store.Account) Result {
 	now := rn.Now()
 	limit := rn.Timeout
@@ -108,13 +123,44 @@ func (rn *Runner) Run(ctx context.Context, a store.Account) Result {
 	}
 	ctx, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
+	res := Result{FetchedAt: now}
 
+	release, ok := rn.acquire(ctx, a.ID)
+	if !ok {
+		res.Failure = &status.Failure{Code: status.QueryTimeout, Diagnostic: DiagBusy}
+		return res
+	}
 	m := newMasker(a.CustomPlaceholders)
 	src := substitute(a.CustomScript, a.CustomPlaceholders, newapi.LocalMidnight(now).Unix(), now.Unix())
-	items, f, msg := rn.run(ctx, src, outbound.Proxy(a.Proxy))
-	res := Result{Failure: f, FetchedAt: now}
+	var (
+		requesting atomic.Bool
+		items      []Item
+		f          *status.Failure
+		msg        string
+		done       = make(chan struct{})
+	)
+	go func() {
+		defer release()
+		defer close(done)
+		items, f, msg = rn.run(ctx, src, outbound.Proxy(a.Proxy), &requesting)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		select {
+		case <-done: // finished at the deadline: its own answer is more precise
+		default:
+			// Left running; it holds the account's slot until it ends.
+			diag := DiagScriptTimeout
+			if requesting.Load() {
+				diag = DiagRequestTimeout
+			}
+			res.Failure = &status.Failure{Code: status.QueryTimeout, Diagnostic: diag}
+			return res
+		}
+	}
 	if f != nil {
-		res.Message = clip(m.mask(msg))
+		res.Failure, res.Message = f, clip(m.mask(msg))
 		return res
 	}
 	for i := range items {
@@ -126,6 +172,36 @@ func (rn *Runner) Run(ctx context.Context, a store.Account) Result {
 	}
 	res.Items = items
 	return res
+}
+
+// acquire waits until no other query of the account is running, so work
+// left running past a limit never piles up behind repeated refreshes. It
+// gives up when ctx ends.
+func (rn *Runner) acquire(ctx context.Context, id string) (release func(), ok bool) {
+	for {
+		rn.mu.Lock()
+		running, held := rn.busy[id]
+		if !held {
+			ch := make(chan struct{})
+			if rn.busy == nil {
+				rn.busy = map[string]chan struct{}{}
+			}
+			rn.busy[id] = ch
+			rn.mu.Unlock()
+			return func() {
+				rn.mu.Lock()
+				delete(rn.busy, id)
+				rn.mu.Unlock()
+				close(ch)
+			}, true
+		}
+		rn.mu.Unlock()
+		select {
+		case <-running:
+		case <-ctx.Done():
+			return nil, false
+		}
+	}
 }
 
 // errDeadline is the value the engine is interrupted with.
@@ -184,7 +260,8 @@ type helpers struct {
 
 // run evaluates the script, sends its request and runs extractor. On
 // failure it returns the failure and the unmasked message for the page.
-func (rn *Runner) run(ctx context.Context, src string, proxy outbound.Proxy) ([]Item, *status.Failure, string) {
+// requesting is set while the request is in flight.
+func (rn *Runner) run(ctx context.Context, src string, proxy outbound.Proxy, requesting *atomic.Bool) ([]Item, *status.Failure, string) {
 	prg, err := compile(src)
 	if err != nil {
 		return nil, scriptFailure(DiagSyntax), err.Error()
@@ -221,7 +298,9 @@ func (rn *Runner) run(ctx context.Context, src string, proxy outbound.Proxy) ([]
 	}
 	req.Proxy, req.MaxResponseBytes = proxy, MaxResponseBytes
 
+	requesting.Store(true)
 	resp, err := rn.HTTP.Do(ctx, req)
+	requesting.Store(false)
 	if f := classify(ctx, resp, err); f != nil {
 		return nil, f, ""
 	}

@@ -543,6 +543,8 @@ func (p *Plugin) testConnection(ctx context.Context, body []byte) managementResp
 			out.Failures = c.Failures
 		}
 	case store.SourceCustom:
+		// A saved account's test waits for its stuck query like a refresh does.
+		a.ID = in.ID
 		r := p.custom.Run(ctx, a)
 		sum := customquery.Summarize(r, nil)
 		out.OK, out.State, out.Currency, out.Failure = sum.Failure == nil, sum.State, sum.Currency, sum.Failure

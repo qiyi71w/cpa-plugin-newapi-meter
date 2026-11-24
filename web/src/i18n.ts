@@ -300,6 +300,7 @@ const zh = {
   "valid.custom_script.required": "粘贴用量脚本。",
   "valid.custom_placeholders.baseUrl.scheme": "baseUrl 要以 http:// 或 https:// 开头。",
   "valid.custom_placeholders.baseUrl.invalid": "baseUrl 只填协议、主机和路径；不要带用户名，也不要带 ? 或 # 之后的内容。",
+  "customNext.busy": "这个账户上一次查询超时后还在后台运行（正则、排序等内置操作无法中断），结束前新的查询会直接超时。修改脚本，稍后再试。",
 } as const;
 
 export type MessageKey = keyof typeof zh;
@@ -602,6 +603,7 @@ const en: Record<MessageKey, string> = {
   "valid.custom_script.required": "Paste a usage script.",
   "valid.custom_placeholders.baseUrl.scheme": "baseUrl must start with http:// or https://.",
   "valid.custom_placeholders.baseUrl.invalid": "Enter only the scheme, host and path in baseUrl, without a user name or anything after ? or #.",
+  "customNext.busy": "This account's previous query passed the time limit and is still running in the background (built-in operations such as regular expressions and sorting cannot be stopped). New queries time out until it ends. Fix the script and try again later.",
 };
 
 export type Lang = "zh" | "en";
