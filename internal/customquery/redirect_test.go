@@ -120,9 +120,10 @@ func TestSameOriginRedirectStillRunsTheQuery(t *testing.T) {
 
 // Under follow, CPA's host follows the redirect itself. A script that keeps
 // its secrets in credential-like header names and the URL query does not
-// hand them to the other origin: the host drops those headers and the
-// plugin's Referer names only the site's origin. (Other header names and a
-// 307/308 body are outside what the host lets the plugin control.)
+// hand them to the other origin when the site's Location carries neither:
+// the host drops those headers and the plugin's Referer names only the
+// site's origin. (Other header names, a 307/308 body and a Location that
+// repeats the query are outside what the host lets the plugin control.)
 func TestFollowCrossOriginRedirectKeepsHeaderAndQueryValues(t *testing.T) {
 	const script = `({
   request: { url: "{{baseUrl}}/v1/usage?token={{accessToken}}", headers: { "X-Api-Key": "{{apiKey}}" } },

@@ -171,9 +171,10 @@ func TestDirectRedirectLimitStillApplies(t *testing.T) {
 // Under follow the host follows every redirect itself (CPA v8.0.78 offers no
 // way to stop it); hosttest mirrors its policy. What the plugin guarantees on
 // a cross-origin redirect: credential-like headers are dropped by the host,
-// and the Referer names only the first origin, so URL query values stay
-// there. Not covered, by the host's design: headers with other names (for
-// example New-Api-User) and the body on 307/308 still reach the target.
+// and the Referer names only the first origin, so the original URL's query
+// does not travel with it. Not covered, by the host's design: headers with
+// other names (for example New-Api-User), the body on 307/308, and whatever
+// the site itself writes into the Location (such as the original query).
 func TestFollowCrossOriginRedirectKeepsCredentialHeadersAndQuery(t *testing.T) {
 	for _, tc := range []struct {
 		code     int

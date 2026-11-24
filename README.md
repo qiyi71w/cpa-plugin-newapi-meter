@@ -154,11 +154,12 @@ plugins:
 凭据只应发给账户配置的站点。站点返回重定向（3xx）时，两种方式的处理不同：
 
 - **直连**：只跟随仍在同一站点的重定向，即协议、主机和端口都不变，或者同一主机从 http 升级到 https（默认端口）。重定向到其他主机、其他端口或从 https 降到 http 时，插件不跟随，也不向新地址发任何请求，这次查询按收到的重定向响应判为失败：响应是网页时显示为「站点防护拦截」，否则显示为「响应异常」。站点迁到新域名后，请把账户的站点地址（自定义查询的 `baseUrl`）改成新地址。
-- **跟随 CPA 代理**：重定向由 CPA 跟随，插件无法阻止。CPA 在跳到其他来源（协议、主机、端口任一不同）时会去掉名称像凭据的请求头：`Authorization`、`Cookie`，以及名称含 `token`、`secret`、`api-key`、`apikey`、`api_key`、`credential` 的头。插件给每个请求设置只含站点来源的 `Referer`（例如 `https://newapi.example.com/`），URL query 里的值不会经 `Referer` 带到新地址；脚本自己设置了 `Referer` 时保留脚本的值。以下内容仍会随重定向发往新地址：
+- **跟随 CPA 代理**：重定向由 CPA 跟随，插件无法阻止。CPA 在跳到其他来源（协议、主机、端口任一不同）时会去掉名称像凭据的请求头：`Authorization`、`Cookie`，以及名称含 `token`、`secret`、`api-key`、`apikey`、`api_key`、`credential` 的头。插件给每个请求设置只含站点来源的 `Referer`（例如 `https://newapi.example.com/`），原请求 URL 里的 query 不会经 `Referer` 带到新地址；脚本自己设置了 `Referer` 时保留脚本的值。以下内容仍会随重定向发往新地址：
   - 名称不像凭据的请求头，例如内置来源的 `New-Api-User`（用户 ID），以及脚本里自定义名称的头（如 `X-User`）；
-  - 307/308 重定向时的请求体。
+  - 307/308 重定向时的请求体；
+  - 站点自己写进重定向地址里的内容，例如迁移后保留原路径和 query 的重定向，会把 query 里的值带过去。
 
-  自定义查询脚本应把密钥放在 `Authorization` 或名称含 `token`、`api-key` 等的请求头里，或放在 URL query 里。不放心站点会重定向到别处时，可以给账户选「直连」。以上行为在 CPA Core v8.0.78 上核对过。
+  自定义查询脚本应把密钥放在 `Authorization` 或名称含 `token`、`api-key` 等的请求头里。不放心站点会重定向到别处时，可以给账户选「直连」。以上行为在 CPA Core v8.0.78 上核对过。
 
 ### CPA 的 request-log 会不会记下凭据
 
