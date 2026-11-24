@@ -281,6 +281,9 @@ export function AccountForm(p: {
   const [test, setTest] = useState<TestState>({ kind: "idle" });
   const [saving, setSaving] = useState(false);
   const heading = useRef<HTMLHeadingElement>(null);
+  // Identifies the latest connection test. Editing a tested field bumps it, so
+  // a result (or a late answer) for older values is never shown as this form's.
+  const testSeq = useRef(0);
 
   useLayoutEffect(() => {
     if (p.focusCredential) document.getElementById(fieldId(form.source === "custom" ? "custom_script" : "credential"))?.focus();
@@ -312,7 +315,10 @@ export function AccountForm(p: {
         return out;
       });
     }
-    if (TESTED_FIELDS.includes(k) && test.kind === "done") setTest({ kind: "idle" });
+    if (TESTED_FIELDS.includes(k)) {
+      testSeq.current++;
+      if (test.kind !== "idle") setTest({ kind: "idle" });
+    }
   };
 
   const failMessage = (e: unknown, action: "save" | "test"): FieldErrors | null => {
@@ -349,11 +355,14 @@ export function AccountForm(p: {
       focusFirst(e);
       return;
     }
+    const seq = ++testSeq.current;
     setTest({ kind: "running" });
     try {
       const result = await testConnection(p.apiKey, toInput(form, stored), stored?.id);
+      if (seq !== testSeq.current) return;
       setTest({ kind: "done", result });
     } catch (err) {
+      if (seq !== testSeq.current) return;
       setTest({ kind: "idle" });
       const fe = failMessage(err, "test");
       if (fe) {
