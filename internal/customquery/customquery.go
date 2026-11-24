@@ -90,11 +90,47 @@ type Result struct {
 	Items []Item
 	// Failure is nil when the script ran and returned a usable result.
 	Failure *status.Failure
-	// Message is the script or engine error text for the page, with the
-	// substituted apiKey and accessToken masked. Never log it.
-	Message   string
+	// Message is the script or engine error text for the page, verbatim
+	// except that the substituted apiKey and accessToken are masked. Never
+	// log it.
+	Message string
+	// Reason is the plugin's own explanation of a script failure, for the
+	// page to word in its language; set instead of Message.
+	Reason    *Reason
 	FetchedAt time.Time
 }
+
+// Reason is a plugin-authored explanation of a script failure. Field names
+// the request or result field it is about (e.g. "result[1].remaining"), or
+// for ReasonUncaught the script position; it never holds script values.
+type Reason struct {
+	Code  string `json:"code"`
+	Field string `json:"field,omitempty"`
+}
+
+// Reason codes. They are stable: the page has a sentence for each.
+const (
+	ReasonNotConfig         = "not_config"
+	ReasonRequestMissing    = "request_missing"
+	ReasonExtractorMissing  = "extractor_missing"
+	ReasonHeadersType       = "headers_not_object"
+	ReasonBodyType          = "body_not_string"
+	ReasonRequestUnreadable = "request_unreadable"
+	ReasonURLInvalid        = "url_invalid"
+	ReasonURLScheme         = "url_scheme"
+	ReasonMethod            = "method_invalid"
+	ReasonHeaderName        = "header_name_invalid"
+	ReasonHeaderValue       = "header_value_invalid"
+	ReasonResultMissing     = "result_missing"
+	ReasonResultUnreadable  = "result_unreadable"
+	ReasonResultEmpty       = "result_empty"
+	ReasonItemType          = "item_not_object"
+	ReasonNumberType        = "field_not_number"
+	ReasonStringType        = "field_not_string"
+	ReasonBooleanType       = "field_not_boolean"
+	ReasonScriptFailed      = "script_failed"
+	ReasonUncaught          = "uncaught"
+)
 
 // Runner runs custom queries.
 type Runner struct {
@@ -134,15 +170,13 @@ func (rn *Runner) Run(ctx context.Context, a store.Account) Result {
 	src := substitute(a.CustomScript, a.CustomPlaceholders, newapi.LocalMidnight(now).Unix(), now.Unix())
 	var (
 		requesting atomic.Bool
-		items      []Item
-		f          *status.Failure
-		msg        string
+		out        Result
 		done       = make(chan struct{})
 	)
 	go func() {
 		defer release()
 		defer close(done)
-		items, f, msg = rn.run(ctx, src, outbound.Proxy(a.Proxy), &requesting)
+		out = rn.run(ctx, src, outbound.Proxy(a.Proxy), &requesting)
 	}()
 	select {
 	case <-done:
@@ -159,10 +193,11 @@ func (rn *Runner) Run(ctx context.Context, a store.Account) Result {
 			return res
 		}
 	}
-	if f != nil {
-		res.Failure, res.Message = f, clip(m.mask(msg))
+	if out.Failure != nil {
+		res.Failure, res.Message, res.Reason = out.Failure, clip(m.mask(out.Message)), out.Reason
 		return res
 	}
+	items := out.Items
 	for i := range items {
 		it := &items[i]
 		it.InvalidMessage = clip(m.mask(it.InvalidMessage))
@@ -211,7 +246,8 @@ var errDeadline = errors.New("custom query time limit reached")
 // keep the original built-ins even if the script replaces them. Every value
 // that comes from the script is turned into a string inside the engine:
 // converting a script object from Go could run script code outside the
-// engine's interrupt and error handling.
+// engine's interrupt and error handling. A config the plugin cannot use is
+// answered with a reason code, which the page words itself.
 const prelude = `(function () {
   var stringify = JSON.stringify, parse = JSON.parse, str = String, own = Object.prototype.hasOwnProperty;
   function describe(e) {
@@ -221,25 +257,23 @@ const prelude = `(function () {
       }
       return "Uncaught " + str(e);
     } catch (_) {
-      return "Uncaught exception";
+      return "";
     }
   }
   function request(c) {
-    if (c === null || (typeof c !== "object" && typeof c !== "function")) {
-      throw new TypeError("the script must evaluate to an object { request, extractor }");
-    }
+    if (c === null || (typeof c !== "object" && typeof c !== "function")) return stringify({ reason: "not_config" });
     var r = c.request;
-    if (r === null || typeof r !== "object") throw new TypeError("request is missing or is not an object");
-    if (typeof c.extractor !== "function") throw new TypeError("extractor is missing or is not a function");
+    if (r === null || typeof r !== "object") return stringify({ reason: "request_missing" });
+    if (typeof c.extractor !== "function") return stringify({ reason: "extractor_missing" });
     var h = r.headers, headers = {};
     if (h !== undefined && h !== null) {
-      if (typeof h !== "object") throw new TypeError("request.headers must be an object");
+      if (typeof h !== "object") return stringify({ reason: "headers_not_object" });
       for (var k in h) {
         if (own.call(h, k) && h[k] !== undefined && h[k] !== null) headers[k] = str(h[k]);
       }
     }
     var body = r.body;
-    if (body !== undefined && body !== null && typeof body !== "string") throw new TypeError("request.body must be a string");
+    if (body !== undefined && body !== null && typeof body !== "string") return stringify({ reason: "body_not_string" });
     return stringify({
       url: typeof r.url === "string" ? r.url : "",
       method: r.method === undefined || r.method === null ? "GET" : str(r.method),
@@ -259,12 +293,12 @@ type helpers struct {
 }
 
 // run evaluates the script, sends its request and runs extractor. On
-// failure it returns the failure and the unmasked message for the page.
-// requesting is set while the request is in flight.
-func (rn *Runner) run(ctx context.Context, src string, proxy outbound.Proxy, requesting *atomic.Bool) ([]Item, *status.Failure, string) {
+// failure the result holds the failure and either the unmasked message or
+// a reason. requesting is set while the request is in flight.
+func (rn *Runner) run(ctx context.Context, src string, proxy outbound.Proxy, requesting *atomic.Bool) Result {
 	prg, err := compile(src)
 	if err != nil {
-		return nil, scriptFailure(DiagSyntax), err.Error()
+		return Result{Failure: scriptFailure(DiagSyntax), Message: err.Error()}
 	}
 	vm := goja.New()
 	vm.SetMaxCallStackSize(maxCallSize)
@@ -275,7 +309,7 @@ func (rn *Runner) run(ctx context.Context, src string, proxy outbound.Proxy, req
 
 	hv, err := vm.RunString(prelude)
 	if err != nil {
-		return nil, engineFailure(err), engineMessage(err)
+		return engineError(err)
 	}
 	var h helpers
 	ho := hv.ToObject(vm)
@@ -292,9 +326,9 @@ func (rn *Runner) run(ctx context.Context, src string, proxy outbound.Proxy, req
 		return h.fail(err, DiagRequest)
 	}
 	rs, _ := rv.Export().(string)
-	req, f, msg := buildRequest(rs)
-	if f != nil {
-		return nil, f, msg
+	req, bad := buildRequest(rs)
+	if bad != nil {
+		return *bad
 	}
 	req.Proxy, req.MaxResponseBytes = proxy, MaxResponseBytes
 
@@ -302,18 +336,18 @@ func (rn *Runner) run(ctx context.Context, src string, proxy outbound.Proxy, req
 	resp, err := rn.HTTP.Do(ctx, req)
 	requesting.Store(false)
 	if f := classify(ctx, resp, err); f != nil {
-		return nil, f, ""
+		return Result{Failure: f}
 	}
 	out, err := h.extract(goja.Undefined(), cfg, vm.ToValue(string(resp.Body)))
 	if err != nil {
 		return h.fail(err, DiagRuntime)
 	}
 	rs, _ = out.Export().(string)
-	items, msg := decodeResult(rs)
-	if msg != "" {
-		return nil, scriptFailure(DiagResult), msg
+	items, reason := decodeResult(rs)
+	if reason != nil {
+		return Result{Failure: scriptFailure(DiagResult), Reason: reason}
 	}
-	return items, nil, ""
+	return Result{Items: items}
 }
 
 // compile parses the script without source maps: the parser's default
@@ -331,51 +365,51 @@ func scriptFailure(diag string) *status.Failure {
 	return &status.Failure{Code: status.ScriptError, Diagnostic: diag}
 }
 
-// engineFailure classifies an error the engine raised outside script code.
-func engineFailure(err error) *status.Failure {
-	var ie *goja.InterruptedError
-	if errors.As(err, &ie) {
-		return &status.Failure{Code: status.QueryTimeout, Diagnostic: DiagScriptTimeout}
-	}
-	return scriptFailure(DiagRuntime)
+// reasonFailure is a script error the plugin explains itself.
+func reasonFailure(diag, code, field string) *Result {
+	return &Result{Failure: scriptFailure(diag), Reason: &Reason{Code: code, Field: field}}
 }
 
-// engineMessage is the page text for an error the engine raised itself. A
-// timeout has none: its failure class already says everything.
-func engineMessage(err error) string {
+// engineError classifies an error the engine raised outside script code. A
+// timeout has no text: its failure class already says everything.
+func engineError(err error) Result {
 	var ie *goja.InterruptedError
 	var so *goja.StackOverflowError
 	switch {
 	case errors.As(err, &ie):
-		return ""
+		return Result{Failure: &status.Failure{Code: status.QueryTimeout, Diagnostic: DiagScriptTimeout}}
 	case errors.As(err, &so):
-		return "RangeError: Maximum call stack size exceeded"
+		return Result{Failure: scriptFailure(DiagRuntime), Message: "RangeError: Maximum call stack size exceeded"}
 	}
-	return "Script failed"
+	return *reasonFailure(DiagRuntime, ReasonScriptFailed, "")
 }
 
 // fail turns an error from script code into a failure and a message.
 // A thrown value is described by the engine itself (see prelude).
-func (h helpers) fail(err error, diag string) ([]Item, *status.Failure, string) {
+func (h helpers) fail(err error, diag string) Result {
 	var ie *goja.InterruptedError
 	var so *goja.StackOverflowError
 	var ex *goja.Exception
 	switch {
 	case errors.As(err, &ie), errors.As(err, &so):
-		return nil, engineFailure(err), engineMessage(err)
+		return engineError(err)
 	case errors.As(err, &ex):
-		msg := "Uncaught exception"
+		var msg string
 		if v, derr := h.describe(goja.Undefined(), ex.Value()); derr == nil {
 			msg, _ = v.Export().(string)
 		} else if errors.As(derr, &ie) {
-			return nil, engineFailure(derr), engineMessage(derr)
+			return engineError(derr)
 		}
-		if pos := position(ex); pos != "" {
+		pos := position(ex)
+		if msg == "" {
+			return *reasonFailure(diag, ReasonUncaught, pos)
+		}
+		if pos != "" {
 			msg += " at " + pos
 		}
-		return nil, scriptFailure(diag), msg
+		return Result{Failure: scriptFailure(diag), Message: msg}
 	}
-	return nil, scriptFailure(diag), "Script failed"
+	return *reasonFailure(diag, ReasonScriptFailed, "")
 }
 
 // position is where in the user script the exception was raised.
@@ -389,39 +423,44 @@ func position(ex *goja.Exception) string {
 	return ""
 }
 
-// buildRequest checks the request the script described. Messages never
-// repeat the URL or header values: they may hold the substituted secrets.
-func buildRequest(raw string) (outbound.Request, *status.Failure, string) {
+// buildRequest checks the request the script described; a nil result means
+// it can be sent. Reasons never repeat the URL or header values: they may
+// hold the substituted secrets.
+func buildRequest(raw string) (outbound.Request, *Result) {
 	var r struct {
+		Reason  string            `json:"reason"`
 		URL     string            `json:"url"`
 		Method  string            `json:"method"`
 		Headers map[string]string `json:"headers"`
 		Body    *string           `json:"body"`
 	}
 	if err := json.Unmarshal([]byte(raw), &r); err != nil {
-		return outbound.Request{}, scriptFailure(DiagRequest), "request could not be read"
+		return outbound.Request{}, reasonFailure(DiagRequest, ReasonRequestUnreadable, "")
+	}
+	if r.Reason != "" {
+		return outbound.Request{}, reasonFailure(DiagRequest, r.Reason, "")
 	}
 	u, err := url.Parse(strings.TrimSpace(r.URL))
 	if err != nil || u.Host == "" || u.Opaque != "" {
 		if err == nil && u.Scheme != "" && !isHTTP(u.Scheme) {
-			return outbound.Request{}, scriptFailure(DiagRequestScheme), "request.url must use http or https"
+			return outbound.Request{}, reasonFailure(DiagRequestScheme, ReasonURLScheme, "")
 		}
-		return outbound.Request{}, scriptFailure(DiagRequestURL), "request.url must be an absolute http or https URL"
+		return outbound.Request{}, reasonFailure(DiagRequestURL, ReasonURLInvalid, "")
 	}
 	if !isHTTP(u.Scheme) {
-		return outbound.Request{}, scriptFailure(DiagRequestScheme), "request.url must use http or https"
+		return outbound.Request{}, reasonFailure(DiagRequestScheme, ReasonURLScheme, "")
 	}
 	method := strings.ToUpper(strings.TrimSpace(r.Method))
 	if !isToken(method) {
-		return outbound.Request{}, scriptFailure(DiagRequestMethod), "request.method is not a valid HTTP method"
+		return outbound.Request{}, reasonFailure(DiagRequestMethod, ReasonMethod, "")
 	}
 	h := http.Header{}
 	for k, v := range r.Headers {
 		if !isToken(k) {
-			return outbound.Request{}, scriptFailure(DiagRequestHeader), "request.headers has an invalid header name"
+			return outbound.Request{}, reasonFailure(DiagRequestHeader, ReasonHeaderName, "")
 		}
 		if strings.ContainsAny(v, "\r\n\x00") {
-			return outbound.Request{}, scriptFailure(DiagRequestHeader), "request.headers has an invalid header value"
+			return outbound.Request{}, reasonFailure(DiagRequestHeader, ReasonHeaderValue, "")
 		}
 		h.Set(k, v)
 	}
@@ -429,7 +468,7 @@ func buildRequest(raw string) (outbound.Request, *status.Failure, string) {
 	if r.Body != nil {
 		req.Body = []byte(*r.Body)
 	}
-	return req, nil, ""
+	return req, nil
 }
 
 func isHTTP(scheme string) bool {
@@ -475,19 +514,19 @@ func classify(ctx context.Context, resp *outbound.Response, err error) *status.F
 
 // decodeResult reads the extractor result: one object or a non-empty array
 // of objects whose fields, when present and not null, have the right types.
-func decodeResult(raw string) ([]Item, string) {
+func decodeResult(raw string) ([]Item, *Reason) {
 	if raw == "" {
-		return nil, "extractor must return an object or an array of objects"
+		return nil, &Reason{Code: ReasonResultMissing}
 	}
 	var list []json.RawMessage
 	single := !strings.HasPrefix(raw, "[")
 	if single {
 		list = []json.RawMessage{json.RawMessage(raw)}
 	} else if err := json.Unmarshal([]byte(raw), &list); err != nil {
-		return nil, "extractor result could not be read"
+		return nil, &Reason{Code: ReasonResultUnreadable}
 	}
 	if len(list) == 0 {
-		return nil, "extractor returned an empty array"
+		return nil, &Reason{Code: ReasonResultEmpty}
 	}
 	items := make([]Item, 0, len(list))
 	for i, el := range list {
@@ -495,53 +534,53 @@ func decodeResult(raw string) ([]Item, string) {
 		if !single {
 			where = "result[" + strconv.Itoa(i) + "]"
 		}
-		it, msg := decodeItem(el, where)
-		if msg != "" {
-			return nil, msg
+		it, reason := decodeItem(el, where)
+		if reason != nil {
+			return nil, reason
 		}
 		items = append(items, it)
 	}
-	return items, ""
+	return items, nil
 }
 
-func decodeItem(raw json.RawMessage, where string) (Item, string) {
+func decodeItem(raw json.RawMessage, where string) (Item, *Reason) {
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(raw, &fields) != nil || fields == nil {
-		return Item{}, where + " must be an object"
+		return Item{}, &Reason{Code: ReasonItemType, Field: where}
 	}
 	var it Item
-	var msg string
+	var reason *Reason
 	present := func(k string) (json.RawMessage, bool) {
 		v, ok := fields[k]
 		return v, ok && string(v) != "null"
 	}
 	num := func(k string) *float64 {
 		v, ok := present(k)
-		if !ok || msg != "" {
+		if !ok || reason != nil {
 			return nil
 		}
 		var f float64
 		if json.Unmarshal(v, &f) != nil {
-			msg = where + "." + k + " must be a number or null"
+			reason = &Reason{Code: ReasonNumberType, Field: where + "." + k}
 			return nil
 		}
 		return &f
 	}
 	text := func(k string) string {
 		v, ok := present(k)
-		if !ok || msg != "" {
+		if !ok || reason != nil {
 			return ""
 		}
 		var s string
 		if json.Unmarshal(v, &s) != nil {
-			msg = where + "." + k + " must be a string or null"
+			reason = &Reason{Code: ReasonStringType, Field: where + "." + k}
 		}
 		return s
 	}
 	if v, ok := present("isValid"); ok {
 		var b bool
 		if json.Unmarshal(v, &b) != nil {
-			return Item{}, where + ".isValid must be a boolean or null"
+			return Item{}, &Reason{Code: ReasonBooleanType, Field: where + ".isValid"}
 		}
 		it.IsValid = &b
 	}
@@ -549,7 +588,7 @@ func decodeItem(raw json.RawMessage, where string) (Item, string) {
 	it.Remaining, it.Used, it.Total = num("remaining"), num("used"), num("total")
 	it.Unit, it.PlanName, it.Extra = text("unit"), text("planName"), text("extra")
 	it.TodaySpend = num("todaySpend")
-	return it, msg
+	return it, reason
 }
 
 // substitute replaces the placeholders in one pass, so a value can never

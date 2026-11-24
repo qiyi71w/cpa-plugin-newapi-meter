@@ -332,3 +332,29 @@ func TestUpdatingCustomAccountDropsItsCache(t *testing.T) {
 		t.Fatal("updated account was served from the cache")
 	}
 }
+
+// Failures the plugin explains itself reach the page as a reason code (no
+// English sentence), so the page can word them in zh or en.
+func TestTestScriptReasonsAreCodes(t *testing.T) {
+	h := newHarness(t)
+	site := newCustomSite(t, `{"ok": true}`)
+	for script, want := range map[string]map[string]any{
+		`({ request: { url: "ftp://example.com/x" }, extractor: function (r) { return r; } })`:                           {"code": "url_scheme"},
+		`({ request: { url: "{{baseUrl}}/x", headers: { "Bad Header": "v" } }, extractor: function (r) { return r; } })`: {"code": "header_name_invalid"},
+		`({ request: { url: "{{baseUrl}}/x" }, extractor: function (r) { return { remaining: "ten", unit: "USD" }; } })`: {"code": "field_not_number", "field": "result.remaining"},
+	} {
+		in := customInput("", site.URL, nil)
+		in["custom_script"] = script
+		_, res := h.testConnection(in)
+		c := res["custom"].(map[string]any)
+		reason, _ := c["script_reason"].(map[string]any)
+		if res["failure"].(map[string]any)["code"] != "script_error" || c["script_error"] != nil || len(reason) != len(want) {
+			t.Fatalf("%s: %v", script, res)
+		}
+		for k, v := range want {
+			if reason[k] != v {
+				t.Fatalf("%s: script_reason %v, want %v", script, reason, want)
+			}
+		}
+	}
+}

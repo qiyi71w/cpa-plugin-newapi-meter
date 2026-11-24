@@ -22,7 +22,10 @@ type customView struct {
 	TotalQuota     *float64          `json:"total_quota"`
 	Plans          []planView        `json:"plans"`
 	InvalidMessage string            `json:"invalid_message,omitempty"`
-	ScriptError    string            `json:"script_error,omitempty"`
+	// ScriptError is the engine's or script's error text, masked; ScriptReason
+	// is a failure the plugin explains with a code the page words itself.
+	ScriptError  string              `json:"script_error,omitempty"`
+	ScriptReason *customquery.Reason `json:"script_reason,omitempty"`
 }
 
 // planView is one extractor item.
@@ -54,6 +57,7 @@ func customViewOf(r customquery.Result, s customquery.Summary) customView {
 		Plans:          make([]planView, 0, len(r.Items)),
 		InvalidMessage: s.InvalidMessage,
 		ScriptError:    r.Message,
+		ScriptReason:   r.Reason,
 	}
 	for _, it := range r.Items {
 		c := customquery.Currency(it.Unit)

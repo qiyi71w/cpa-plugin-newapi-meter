@@ -151,8 +151,16 @@ export interface CustomView {
   total_quota: number | null;
   plans: CustomPlan[];
   invalid_message?: string;
-  /** engine or script error, substituted secrets masked */
+  /** engine or script error, substituted secrets masked; shown verbatim */
   script_error?: string;
+  /** a failure the plugin explains itself; the page words it (custom.reason.<code>) */
+  script_reason?: ScriptReason;
+}
+
+export interface ScriptReason {
+  code: string;
+  /** the request/result field it is about, or for "uncaught" the script position */
+  field?: string;
 }
 
 export interface CustomTest extends CustomView {

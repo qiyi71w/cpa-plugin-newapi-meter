@@ -498,23 +498,65 @@ func TestScriptErrorsMaskSubstitutedSecrets(t *testing.T) {
 	}
 }
 
+// wantReason checks a failure the plugin explains with a reason code, never
+// with its own (English) text, so the page can word it in its language.
+func wantReason(t *testing.T, name string, r Result, want Reason) {
+	t.Helper()
+	if r.Reason == nil || *r.Reason != want || r.Message != "" {
+		t.Errorf("%s: reason %+v message %q, want %+v and no message", name, r.Reason, r.Message, want)
+	}
+}
+
+func TestUnusableConfigAndRequestReasons(t *testing.T) {
+	rn, d := newRunner()
+	for script, want := range map[string]struct {
+		diag   string
+		reason Reason
+	}{
+		`42`: {DiagRequest, Reason{Code: ReasonNotConfig}},
+		`({ extractor: function (r) { return r; } })`:                                                                  {DiagRequest, Reason{Code: ReasonRequestMissing}},
+		`({ request: { url: "https://api.example.com" } })`:                                                            {DiagRequest, Reason{Code: ReasonExtractorMissing}},
+		`({ request: { url: "https://api.example.com", headers: 1 }, extractor: function () {} })`:                     {DiagRequest, Reason{Code: ReasonHeadersType}},
+		`({ request: { url: "https://api.example.com", body: {} }, extractor: function () {} })`:                       {DiagRequest, Reason{Code: ReasonBodyType}},
+		`({ request: { url: "ftp://example.com/x" }, extractor: function (r) { return r; } })`:                         {DiagRequestScheme, Reason{Code: ReasonURLScheme}},
+		`({ request: { url: "/x" }, extractor: function (r) { return r; } })`:                                          {DiagRequestURL, Reason{Code: ReasonURLInvalid}},
+		`({ request: { url: "https://api.example.com", method: "GE T" }, extractor: function () {} })`:                 {DiagRequestMethod, Reason{Code: ReasonMethod}},
+		`({ request: { url: "https://api.example.com", headers: { "Bad Header": "v" } }, extractor: function () {} })`: {DiagRequestHeader, Reason{Code: ReasonHeaderName}},
+		`({ request: { url: "https://api.example.com", headers: { A: "a\nB: 1" } }, extractor: function () {} })`:      {DiagRequestHeader, Reason{Code: ReasonHeaderValue}},
+	} {
+		r := rn.Run(context.Background(), account(script, ""))
+		wantFailure(t, r, status.ScriptError, want.diag)
+		wantReason(t, script, r, want.reason)
+	}
+	if d.n.Load() != 0 {
+		t.Fatalf("%d requests were sent", d.n.Load())
+	}
+	// A thrown value that cannot be turned into text: the position remains.
+	r := rn.Run(context.Background(), account("\n  throw { toString: function () { throw 1; } }", ""))
+	wantFailure(t, r, status.ScriptError, DiagRuntime)
+	wantReason(t, "unprintable throw", r, Reason{Code: ReasonUncaught, Field: "script:2:3"})
+	// Engine and script text stays verbatim.
+	r = rn.Run(context.Background(), account(`throw new RangeError("quota gone")`, ""))
+	if r.Reason != nil || r.Message != "RangeError: quota gone at script:1:7" {
+		t.Fatalf("thrown error: %+v %q", r.Reason, r.Message)
+	}
+}
+
 func TestUnusableResultsAndResponses(t *testing.T) {
 	rn, _ := newRunner()
 	srv := serveJSON(t, nil, `{"v": 1}`)
-	for result, want := range map[string]string{
-		`undefined`:               "extractor must return",
-		`null`:                    "must be an object",
-		`[]`:                      "empty array",
-		`42`:                      "must be an object",
-		`{ remaining: "12" }`:     "result.remaining must be a number",
-		`[{}, { isValid: "no" }]`: "result[1].isValid must be a boolean",
-		`{ unit: 5 }`:             "result.unit must be a string",
+	for result, want := range map[string]Reason{
+		`undefined`:               {Code: ReasonResultMissing},
+		`null`:                    {Code: ReasonItemType, Field: "result"},
+		`[]`:                      {Code: ReasonResultEmpty},
+		`42`:                      {Code: ReasonItemType, Field: "result"},
+		`{ remaining: "12" }`:     {Code: ReasonNumberType, Field: "result.remaining"},
+		`[{}, { isValid: "no" }]`: {Code: ReasonBooleanType, Field: "result[1].isValid"},
+		`{ unit: 5 }`:             {Code: ReasonStringType, Field: "result.unit"},
 	} {
 		r := rn.Run(context.Background(), account(`({ request: { url: "{{baseUrl}}" }, extractor: function () { return `+result+`; } })`, srv.URL))
 		wantFailure(t, r, status.ScriptError, DiagResult)
-		if !strings.Contains(r.Message, want) {
-			t.Errorf("%s: message %q, want %q", result, r.Message, want)
-		}
+		wantReason(t, result, r, want)
 	}
 	// Null fields are absent fields.
 	r := rn.Run(context.Background(), account(`({ request: { url: "{{baseUrl}}" }, extractor: function () { return { remaining: null, unit: null, isValid: null }; } })`, srv.URL))

@@ -217,7 +217,7 @@ apiKey 和 accessToken 与账户凭据同样处理：保存后只显示打码值
 
 | 结果 | 含义 |
 |---|---|
-| 脚本出错（`script_error`） | 语法错误、运行时异常、`request` 不合法（例如不是 http/https 地址），或者 `extractor` 的返回值不符合上面的格式；页面显示引擎给出的报错 |
+| 脚本出错（`script_error`） | 语法错误、运行时异常、`request` 不合法（例如不是 http/https 地址），或者 `extractor` 的返回值不符合上面的格式。引擎或脚本自己的报错原样显示；`request` 和返回值哪里不合格由插件判断，页面用当前语言说明 |
 | 查询超时（`query_timeout`） | 请求加脚本超过 10 秒（`SCRIPT_TIMEOUT`、`REQUEST_TIMEOUT`），或者这个账户上一次超时的查询还在后台运行（`PREVIOUS_QUERY_RUNNING`，见下文） |
 | 脚本报告账户不可用（`reported_invalid`） | `extractor` 返回了 `isValid: false` |
 | 响应异常（`bad_response`） | 2xx 响应不是 JSON，或者响应超过 1 MiB |
@@ -323,7 +323,7 @@ plugins:
 
 概况（`overview`）中每个账户的主要字段：`state`（`ok` / `low` / `partial` / `needs_action`）、`currency`（`code` 为 `USD`/`CNY`/`CUSTOM`/`TOKENS`，自定义查询的其他单位为 `UNIT`，`symbol` 是单位原文）、`balance`、`total_used`、`today_spend`、`rpm`、`tpm`（读不到时为 `null`）、`low_balance_threshold`、`balance_failure` / `today_failure`（对应数字读不到的原因）、`primary_failure`（需处理时的主要原因）、`failures`（失败的接口）、`fetched_at`、`last_success_at`（CPA 本次运行中最近一次成功读取）、`cached`。顶层还有 `generated_at`、`today_start`（CPA 本机时区的今日零点）和 `timezone`。
 
-自定义查询账户另有 `custom`：`balance_basis`（`sum` 合计 / `first` 第一项；只有一项时省略）、`total_quota`、`plans`（每项 `plan_name`、`extra`、`remaining`、`used`、`total`、`today_spend`、`unit`、`currency`、`is_valid`、`invalid_message`）、`invalid_message`（脚本报告不可用时）、`script_error`（脚本出错时的报错，已遮掉 apiKey 和 accessToken）。
+自定义查询账户另有 `custom`：`balance_basis`（`sum` 合计 / `first` 第一项；只有一项时省略）、`total_quota`、`plans`（每项 `plan_name`、`extra`、`remaining`、`used`、`total`、`today_spend`、`unit`、`currency`、`is_valid`、`invalid_message`）、`invalid_message`（脚本报告不可用时）、`script_error`（引擎或脚本给出的报错原文，已遮掉 apiKey 和 accessToken）、`script_reason`（插件自己判断出的脚本问题，代替 `script_error`：`code` 是稳定的原因代码，如 `url_scheme`、`header_name_invalid`、`field_not_number`；`field` 是涉及的字段，如 `result[1].remaining`，可省略）。
 
 测试连接（`accounts/test`）返回：`source`、`ok`（所有计入的查询都成功）、`state`（`ok` / `partial` / `needs_action`，不做余额阈值判断）、`credential_kind`、`site_version`、`currency`、`data_export`、`failure`（最需要处理的失败，成功时为 `null`）、`failures`（失败的接口）。自定义查询账户的测试（页面上的「测试脚本」）另返回 `custom`，字段同概况里的 `custom`，再加上 `balance`、`total_used`、`today_spend`。请求体的校验规则与保存相同，但不检查 `name` 和 `low_balance_threshold`；校验失败返回 400 `validation_failed`，`id` 不存在返回 404 `account_not_found`。
 

@@ -3,7 +3,7 @@
 import { currencyLabel, money, stamp } from "./format";
 import { t, tDynamic } from "./i18n";
 import { Icon } from "./icons";
-import type { ConnectionTest, Currency, CustomPlan, CustomView, Failure, OverviewAccount } from "./types";
+import type { ConnectionTest, Currency, CustomPlan, CustomView, Failure, OverviewAccount, ScriptReason } from "./types";
 
 /** Failures the user fixes by editing the script or its values rather than by waiting. */
 const EDIT_FAILURES: Record<string, true> = {
@@ -67,9 +67,16 @@ function PlanTable(p: { plans: CustomPlan[] }) {
   );
 }
 
-/** Why a custom query failed: the script's own reason or error text, quoted. */
+/** The page's sentence for a failure the plugin explains itself. */
+export function reasonText(r: ScriptReason): string {
+  const key = r.code === "uncaught" && r.field ? "uncaught_at" : r.code;
+  return tDynamic(`custom.reason.${key}`, r.code).replace("{field}", r.field ?? "");
+}
+
+/** Why a custom query failed: the plugin's explanation, or the script's own reason or error text, quoted. */
 function Reason(p: { view: CustomView | undefined }) {
   const v = p.view;
+  if (v?.script_reason) return <p class="nm-quote-text">{reasonText(v.script_reason)}</p>;
   if (v?.script_error) {
     // The title already says the script failed; the engine's text follows as is.
     return <pre class="nm-quote-text nm-quote-text--code">{v.script_error}</pre>;
