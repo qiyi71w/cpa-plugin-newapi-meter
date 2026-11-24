@@ -241,8 +241,7 @@ func (s *Store) load() ([]Account, error) {
 		return nil, &FileError{FileUnavailable, s.path, err}
 	}
 	var head struct {
-		SchemaVersion *int            `json:"schema_version"`
-		Accounts      json.RawMessage `json:"accounts"`
+		SchemaVersion *int `json:"schema_version"`
 	}
 	if err := json.Unmarshal(raw, &head); err != nil {
 		return nil, &FileError{FileCorrupt, s.path, err}
@@ -253,15 +252,16 @@ func (s *Store) load() ([]Account, error) {
 	if *head.SchemaVersion > SchemaVersion {
 		return nil, &FileError{FileNewer, s.path, fmt.Errorf("schema_version %d is newer than %d", *head.SchemaVersion, SchemaVersion)}
 	}
-	// A file without an account list is not an empty store: saving over it
-	// would silently replace whatever it is.
-	if len(head.Accounts) == 0 || string(head.Accounts) == "null" {
-		return nil, &FileError{FileCorrupt, s.path, errors.New("missing accounts")}
-	}
 	var doc document
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	if err := dec.Decode(&doc); err != nil {
 		return nil, &FileError{FileCorrupt, s.path, err}
+	}
+	// A file without an account list (missing or null; [] decodes to a
+	// non-nil empty slice) is not an empty store: saving over it would
+	// silently replace whatever it is.
+	if doc.Accounts == nil {
+		return nil, &FileError{FileCorrupt, s.path, errors.New("missing accounts")}
 	}
 	seen := make(map[string]bool, len(doc.Accounts))
 	for i := range doc.Accounts {
