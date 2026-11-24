@@ -2,6 +2,7 @@
 // today's spend and the headroom gauge; an optional "all accounts" cell sits
 // before the tabs and is not a tab.
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
+import { BasisTag } from "./custom";
 import { ago, money } from "./format";
 import { t, tDynamic } from "./i18n";
 import { Icon } from "./icons";
@@ -33,7 +34,7 @@ function Gauge(p: { a: OverviewAccount }) {
 function gaugeHint(a: OverviewAccount): string {
   const g = gauge(a);
   if (g.form === "none") return t("gauge.noThreshold");
-  if (g.form === "unknown") return t("gauge.unknown");
+  if (g.form === "unknown") return a.state === "partial" ? t("gauge.unknown") : "";
   if (g.form === "error") return "";
   const ratio = Number.isFinite(g.multiple) ? g.multiple.toFixed(1) : "∞";
   return t("gauge.ratio", { ratio, threshold: money(a.low_balance_threshold, a.currency) });
@@ -57,7 +58,17 @@ function Tab(p: { a: OverviewAccount; selected: boolean; nowMs: number; onSelect
           <small>{failureTitle(a.balance_failure?.code)}</small>
         </span>
       ) : (
-        <span class="nm-tab-bal">{money(a.balance, a.currency)}</span>
+        <span class="nm-tab-bal" title={money(a.balance, a.currency)}>
+          {a.currency?.code === "UNIT" && a.currency.symbol ? (
+            // A script unit can be long: the number keeps the large type, the unit follows small.
+            <span class="nm-tab-amt">
+              {money(a.balance, { code: "UNIT", symbol: "" })}
+              <small class="nm-tab-unit">{a.currency.symbol}</small>
+            </span>
+          ) : (
+            <span class="nm-tab-amt">{money(a.balance, a.currency)}</span>
+          )}
+        </span>
       );
     sub = t("band.today", { amount: money(a.today_spend, a.currency) });
   }
@@ -83,7 +94,11 @@ function Tab(p: { a: OverviewAccount; selected: boolean; nowMs: number; onSelect
         </span>
       </span>
       {balance}
-      <span class="nm-tab-sub">{sub}</span>
+      <span class="nm-tab-sub">
+        {/* 「合计」/「第一项」 sits under the balance so a long amount never loses digits */}
+        {a.state !== "needs_action" && a.balance != null && <BasisTag basis={a.custom?.balance_basis} />}
+        {sub}
+      </span>
       <Gauge a={a} />
     </button>
   );

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/qiyi71w/cpa-plugin-newapi-meter/internal/cache"
+	"github.com/qiyi71w/cpa-plugin-newapi-meter/internal/customquery"
 	"github.com/qiyi71w/cpa-plugin-newapi-meter/internal/newapi"
 	"github.com/qiyi71w/cpa-plugin-newapi-meter/internal/outbound"
 	"github.com/qiyi71w/cpa-plugin-newapi-meter/internal/status"
@@ -245,6 +246,7 @@ func (p *Plugin) deleteAccount(id string) managementResponse {
 func (p *Plugin) forget(id string) {
 	p.overviews.Forget(id)
 	p.periods.Forget(id)
+	p.customs.Forget(id)
 	p.okMu.Lock()
 	delete(p.lastOK, id)
 	p.okMu.Unlock()
@@ -276,6 +278,8 @@ type overviewItem struct {
 	LastSuccessAt       *time.Time       `json:"last_success_at"`
 	Cached              bool             `json:"cached"`
 	UnsupportedSource   bool             `json:"unsupported_source,omitempty"`
+	// Custom carries what only custom-query accounts have.
+	Custom *customView `json:"custom,omitempty"`
 }
 
 // overview serves GET .../overview. Query: force=1 bypasses the cache; with
@@ -316,6 +320,9 @@ func (p *Plugin) overviewOf(ctx context.Context, a store.Account, force bool) ov
 	item := overviewItem{
 		ID: a.ID, Name: a.Name, Source: a.Source, BaseURL: a.BaseURL, Host: hostOf(a.BaseURL),
 		LowBalanceThreshold: a.LowBalanceThreshold, Failures: []status.Probe{},
+	}
+	if a.Source == store.SourceCustom {
+		return p.customOverviewOf(ctx, a, force, item)
 	}
 	if a.Source != store.SourceNewAPI {
 		item.State = status.NeedsAction
@@ -494,6 +501,8 @@ type connectionTest struct {
 	DataExport     *bool            `json:"data_export"`
 	Failure        *status.Failure  `json:"failure"`
 	Failures       []status.Probe   `json:"failures"`
+	// Custom is the extraction result or script error of a custom query.
+	Custom *customTest `json:"custom,omitempty"`
 }
 
 // testConnection serves POST .../accounts/test: it queries the site once with
@@ -533,6 +542,14 @@ func (p *Plugin) testConnection(ctx context.Context, body []byte) managementResp
 		if c.Failures != nil {
 			out.Failures = c.Failures
 		}
+	case store.SourceCustom:
+		r := p.custom.Run(ctx, a)
+		sum := customquery.Summarize(r, nil)
+		out.OK, out.State, out.Currency, out.Failure = sum.Failure == nil, sum.State, sum.Currency, sum.Failure
+		if sum.Failure != nil {
+			out.Failures = sum.Probes
+		}
+		out.Custom = &customTest{Balance: sum.Balance, TotalUsed: sum.TotalUsed, TodaySpend: sum.TodaySpend, customView: customViewOf(r, sum)}
 	default:
 		// store.Resolve accepts only sources this build can query.
 		return apiError(http.StatusBadRequest, errorBody{Code: "validation_failed", Field: "source", Reason: store.ReasonUnsupported})

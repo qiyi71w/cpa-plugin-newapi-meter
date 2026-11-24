@@ -224,7 +224,8 @@ func TestConnectionTestValidatesLikeSave(t *testing.T) {
 		{map[string]any{"base_url": site.URL, "credential": secretLegacy, "user_id": "4x"}, "user_id", "not_numeric"},
 		{map[string]any{"base_url": "ftp://newapi.example.com", "credential": secretPAT}, "base_url", "scheme"},
 		{map[string]any{"base_url": site.URL, "credential": ""}, "credential", "required"},
-		{map[string]any{"base_url": site.URL, "credential": secretPAT, "source": "custom"}, "source", "unsupported"},
+		{map[string]any{"base_url": site.URL, "credential": secretPAT, "source": "custom"}, "custom_script", "required"},
+		{map[string]any{"source": "custom", "custom_script": "({})", "custom_placeholders": map[string]any{"baseUrl": "ftp://api.example.com"}}, "custom_placeholders.baseUrl", "scheme"},
 	} {
 		st, res := h.testConnection(c.body)
 		e, _ := res["error"].(map[string]any)

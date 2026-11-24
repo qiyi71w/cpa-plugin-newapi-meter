@@ -1,9 +1,12 @@
 // The add/edit account form with its connection test. Fields are grouped by
-// data source: the shared ones (name, source, proxy) and the built-in
-// new-api ones (site address, credential, user ID, threshold).
+// data source: the shared ones (name, source, proxy), the built-in new-api
+// ones (site address, credential, user ID, threshold) and the custom-query
+// ones (script, placeholder values, threshold).
 import type { ComponentChildren } from "preact";
 import { useLayoutEffect, useRef, useState } from "preact/hooks";
 import { ApiError, createAccount, testConnection, updateAccount } from "./api";
+import { CustomTestResult } from "./custom";
+import { currencyLabel } from "./format";
 import {
   effectiveKind,
   FIELD_ORDER,
@@ -32,14 +35,14 @@ const FIELD_OF: Record<keyof FormState, Field> = {
   userId: "user_id",
   threshold: "low_balance_threshold",
   proxy: "proxy",
+  script: "custom_script",
+  phBaseUrl: "custom_placeholders.baseUrl",
+  apiKey: "custom_placeholders.apiKey",
+  accessToken: "custom_placeholders.accessToken",
+  phUserId: "custom_placeholders.userId",
 };
 
 export const fieldId = (f: Field) => `nm-f-${f}`;
-
-export function currencyLabel(c: Currency): string {
-  if (c.code === "CUSTOM") return t("currency.CUSTOM", { symbol: c.symbol });
-  return tDynamic(`currency.${c.code}`, c.code);
-}
 
 function kindLabel(kind: string): string {
   return t(kind === "pat" ? "credential.pat" : "credential.legacy");
@@ -106,6 +109,43 @@ function TextField(p: {
           {p.hint}
         </p>
       )}
+    </div>
+  );
+}
+
+/** The custom-query script editor: monospace, no wrapping, no spell checks. */
+function ScriptField(p: { error?: string; value: string; onInput: (v: string) => void }) {
+  const id = fieldId("custom_script");
+  return (
+    <div class="nm-field" data-invalid={p.error ? "" : undefined}>
+      <label class="nm-field-label" for={id}>
+        {t("form.script")}
+      </label>
+      <textarea
+        id={id}
+        name="custom_script"
+        class="nm-input nm-script"
+        rows={14}
+        wrap="off"
+        autocomplete="off"
+        autocapitalize="off"
+        spellcheck={false}
+        placeholder={"({\n  request: { url: \"{{baseUrl}}/user/balance\", method: \"GET\", headers: { Authorization: \"Bearer {{apiKey}}\" } },\n  extractor: function (response) {\n    return { remaining: response.balance, unit: \"USD\" };\n  }\n})"}
+        value={p.value}
+        aria-invalid={p.error ? true : undefined}
+        aria-describedby={describedBy(p.error && `${id}-error`, `${id}-hint`, `${id}-risk`)}
+        onInput={(e) => p.onInput(e.currentTarget.value)}
+      />
+      <FieldError field="custom_script" reason={p.error} />
+      <p class="nm-field-hint" id={`${id}-hint`}>
+        {t("form.script.hint")}
+      </p>
+      <div class="nm-risk" id={`${id}-risk`} role="note">
+        <Icon name="alert" />
+        <p>
+          <strong>{t("form.script.risk")}</strong> {t("form.script.limits")}
+        </p>
+      </div>
     </div>
   );
 }
@@ -177,6 +217,7 @@ function Facts(p: { r: ConnectionTest }) {
 
 export function TestResult(p: { r: ConnectionTest }) {
   const { r } = p;
+  if (r.source === "custom") return <CustomTestResult r={r} />;
   if (r.ok || !r.failure) {
     return (
       <div class="nm-test" data-tone="ok">
@@ -242,7 +283,7 @@ export function AccountForm(p: {
   const heading = useRef<HTMLHeadingElement>(null);
 
   useLayoutEffect(() => {
-    if (p.focusCredential) document.getElementById(fieldId("credential"))?.focus();
+    if (p.focusCredential) document.getElementById(fieldId(form.source === "custom" ? "custom_script" : "credential"))?.focus();
     else heading.current?.focus();
   }, []);
 
@@ -353,9 +394,27 @@ export function AccountForm(p: {
   else if (stored?.credential_masked) credentialHint = t("form.credential.keep", { kind: kindLabel(stored.credential_kind || "legacy") });
   else credentialHint = t("form.credential.hintNew");
 
+  const custom = form.source === "custom";
   const tested = test.kind === "done" ? test.result.currency : null;
   const unit = tested ?? p.currency;
-  const thresholdHint = unit ? t("form.threshold.hint", { unit: currencyLabel(unit) }) : t("form.threshold.hintUnknown");
+  const thresholdHint = unit
+    ? t("form.threshold.hint", { unit: currencyLabel(unit) })
+    : t(custom ? "form.threshold.hintScript" : "form.threshold.hintUnknown");
+  const thresholdField = (
+    <TextField
+      field="low_balance_threshold"
+      label={t("form.threshold")}
+      hint={thresholdHint}
+      error={errors.low_balance_threshold}
+      inputMode="decimal"
+      narrow
+      mono
+      value={form.threshold}
+      onInput={(v) => update("threshold", v)}
+    />
+  );
+  const ph = stored?.source === "custom" ? stored.custom_placeholders : null;
+  const secretHint = (typed: string, masked: string | undefined) => (!typed.trim() && masked ? t("form.ph.secret.keep") : t("form.ph.secret.hintNew"));
 
   return (
     <form class="nm-form" onSubmit={save} noValidate>
@@ -422,17 +481,66 @@ export function AccountForm(p: {
               onInput={(v) => update("userId", v)}
             />
           )}
-          <TextField
-            field="low_balance_threshold"
-            label={t("form.threshold")}
-            hint={thresholdHint}
-            error={errors.low_balance_threshold}
-            inputMode="decimal"
-            narrow
-            mono
-            value={form.threshold}
-            onInput={(v) => update("threshold", v)}
-          />
+          {thresholdField}
+        </>
+      )}
+
+      {custom && (
+        <>
+          <ScriptField error={errors.custom_script} value={form.script} onInput={(v) => update("script", v)} />
+          <fieldset class="nm-field nm-placeholders" aria-describedby="nm-ph-hint">
+            <legend class="nm-field-label">{t("form.placeholders")}</legend>
+            <p class="nm-field-hint" id="nm-ph-hint">
+              {t("form.placeholders.hint")}
+            </p>
+            <div class="nm-ph-grid">
+              <TextField
+                field="custom_placeholders.baseUrl"
+                label="baseUrl"
+                hint={t("form.ph.baseUrl.hint")}
+                error={errors["custom_placeholders.baseUrl"]}
+                inputMode="url"
+                placeholder="https://api.example.com"
+                mono
+                value={form.phBaseUrl}
+                onInput={(v) => update("phBaseUrl", v)}
+                onBlur={() => {
+                  const v = trimBaseUrl(form.phBaseUrl);
+                  if (v !== form.phBaseUrl) update("phBaseUrl", v);
+                }}
+              />
+              <TextField
+                field="custom_placeholders.userId"
+                label="userId"
+                mono
+                value={form.phUserId}
+                onInput={(v) => update("phUserId", v)}
+              />
+              <TextField
+                field="custom_placeholders.apiKey"
+                label="apiKey"
+                hint={secretHint(form.apiKey, ph?.apiKeyMasked)}
+                hintLive
+                type="password"
+                placeholder={ph?.apiKeyMasked || undefined}
+                mono
+                value={form.apiKey}
+                onInput={(v) => update("apiKey", v)}
+              />
+              <TextField
+                field="custom_placeholders.accessToken"
+                label="accessToken"
+                hint={secretHint(form.accessToken, ph?.accessTokenMasked)}
+                hintLive
+                type="password"
+                placeholder={ph?.accessTokenMasked || undefined}
+                mono
+                value={form.accessToken}
+                onInput={(v) => update("accessToken", v)}
+              />
+            </div>
+          </fieldset>
+          {thresholdField}
         </>
       )}
 
@@ -446,7 +554,7 @@ export function AccountForm(p: {
       />
 
       <div class="nm-test-slot" role="status" aria-live="polite">
-        {test.kind === "running" && <p class="nm-status-line">{t("test.running")}</p>}
+        {test.kind === "running" && <p class="nm-status-line">{t(custom ? "test.script.running" : "test.running")}</p>}
         {test.kind === "done" && <TestResult r={test.result} />}
       </div>
 
@@ -456,7 +564,7 @@ export function AccountForm(p: {
         </button>
         <button type="button" class="nm-btn" onClick={() => void runTest()} disabled={test.kind === "running"} aria-busy={test.kind === "running"}>
           {test.kind === "running" && <Icon name="refresh" class="nm-spin" />}
-          {test.kind === "running" ? t("form.testing") : t("form.test")}
+          {test.kind === "running" ? t(custom ? "form.testingScript" : "form.testing") : t(custom ? "form.testScript" : "form.test")}
         </button>
         <button type="button" class="nm-btn nm-btn-quiet" onClick={p.onCancel}>
           {t("form.cancel")}

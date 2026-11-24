@@ -1,6 +1,7 @@
-// Detail of the selected account: the title row, then the period region
-// (period.tsx) or the needs-action alert.
+// Detail of the selected account: the title row, then the custom-query
+// detail (custom.tsx), the period region (period.tsx) or the needs-action alert.
 import type { DetailQuery } from "./api";
+import { CustomDetail } from "./custom";
 import { ago, stamp } from "./format";
 import { t, tDynamic } from "./i18n";
 import { Icon } from "./icons";
@@ -150,7 +151,9 @@ export function Detail(p: {
   return (
     <>
       <Head a={a} nowMs={p.nowMs} refreshing={p.refreshing} onRefresh={p.onRefresh} onManage={p.onManage} />
-      {a.state === "needs_action" ? (
+      {a.source === "custom" ? (
+        <CustomDetail a={a} refreshing={p.retrying || p.refreshing} onRetry={p.onRetry} onEdit={p.onReplaceCredential} />
+      ) : a.state === "needs_action" ? (
         <NeedsAction a={a} refreshing={p.retrying || p.refreshing} onRetry={p.onRetry} onReplaceCredential={p.onReplaceCredential} />
       ) : (
         <PeriodDetail

@@ -1,4 +1,4 @@
-import { locale, t } from "./i18n";
+import { locale, t, tDynamic } from "./i18n";
 import type { Currency } from "./types";
 
 const compactFmt = new Intl.NumberFormat(locale, { notation: "compact", maximumFractionDigits: 1 });
@@ -18,14 +18,23 @@ export function compact(v: number): string {
   return compactFmt.format(v);
 }
 
-/** An amount in the account's display currency; "—" when unknown. */
+/** An amount in the account's display currency; "—" when unknown. A
+ *  custom-query unit other than USD/CNY follows the number verbatim. */
 export function money(v: number | null | undefined, c: Currency | null | undefined): string {
   if (v == null || !Number.isFinite(v) || !c) return "—";
   if (c.code === "TOKENS") return `${compact(v)} tokens`;
   const abs = Math.abs(v);
   // Small amounts keep enough digits to stay distinguishable from zero.
   const digits = abs >= 1 || abs === 0 ? 2 : abs >= 0.01 ? 4 : 6;
+  if (c.code === "UNIT") return `${v < 0 ? "-" : ""}${moneyFmt(digits).format(abs)}${c.symbol ? ` ${c.symbol}` : ""}`;
   return `${v < 0 ? "-" : ""}${c.symbol}${moneyFmt(digits).format(abs)}`;
+}
+
+/** The name of a display currency, as shown next to thresholds and test results. */
+export function currencyLabel(c: Currency): string {
+  if (c.code === "CUSTOM") return t("currency.CUSTOM", { symbol: c.symbol });
+  if (c.code === "UNIT") return c.symbol || t("currency.unitless");
+  return tDynamic(`currency.${c.code}`, c.code);
 }
 
 export function rate(v: number | null | undefined): string {
