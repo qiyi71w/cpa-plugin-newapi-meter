@@ -23,7 +23,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unicode/utf8"
 
 	"github.com/dop251/goja"
 	"github.com/dop251/goja/parser"
@@ -130,7 +129,18 @@ const (
 	ReasonBooleanType       = "field_not_boolean"
 	ReasonScriptFailed      = "script_failed"
 	ReasonUncaught          = "uncaught"
+	// ReasonUnknown stands for any reason the plugin did not write, e.g. one
+	// a script forged by changing built-ins the prelude relies on.
+	ReasonUnknown = "unknown"
 )
+
+// preludeReasons are the codes the prelude's request helper reports. Its
+// output passes through script-replaceable built-ins (an inherited toJSON),
+// so any other value is not trusted as a code.
+var preludeReasons = map[string]bool{
+	ReasonNotConfig: true, ReasonRequestMissing: true, ReasonExtractorMissing: true,
+	ReasonHeadersType: true, ReasonBodyType: true,
+}
 
 // Runner runs custom queries.
 type Runner struct {
@@ -176,7 +186,9 @@ func (rn *Runner) Run(ctx context.Context, a store.Account) Result {
 	go func() {
 		defer release()
 		defer close(done)
-		out = rn.run(ctx, src, outbound.Proxy(a.Proxy), &requesting)
+		// Masking and clipping belong to the query: script strings can be
+		// large, so they too must finish within the limit or not be waited for.
+		out = m.sanitize(rn.run(ctx, src, outbound.Proxy(a.Proxy), &requesting))
 	}()
 	select {
 	case <-done:
@@ -193,20 +205,25 @@ func (rn *Runner) Run(ctx context.Context, a store.Account) Result {
 			return res
 		}
 	}
-	if out.Failure != nil {
-		res.Failure, res.Message, res.Reason = out.Failure, clip(m.mask(out.Message)), out.Reason
-		return res
+	res.Items, res.Failure, res.Message, res.Reason = out.Items, out.Failure, out.Message, out.Reason
+	return res
+}
+
+// sanitize masks the substituted secrets in every script-supplied string of
+// r and clips them.
+func (m masker) sanitize(r Result) Result {
+	if r.Failure != nil {
+		r.Message = clip(m.mask(r.Message))
+		return r
 	}
-	items := out.Items
-	for i := range items {
-		it := &items[i]
+	for i := range r.Items {
+		it := &r.Items[i]
 		it.InvalidMessage = clip(m.mask(it.InvalidMessage))
 		it.Unit = clip(m.mask(it.Unit))
 		it.PlanName = clip(m.mask(it.PlanName))
 		it.Extra = clip(m.mask(it.Extra))
 	}
-	res.Items = items
-	return res
+	return r
 }
 
 // acquire waits until no other query of the account is running, so work
@@ -438,7 +455,11 @@ func buildRequest(raw string) (outbound.Request, *Result) {
 		return outbound.Request{}, reasonFailure(DiagRequest, ReasonRequestUnreadable, "")
 	}
 	if r.Reason != "" {
-		return outbound.Request{}, reasonFailure(DiagRequest, r.Reason, "")
+		code := r.Reason
+		if !preludeReasons[code] {
+			code = ReasonUnknown
+		}
+		return outbound.Request{}, reasonFailure(DiagRequest, code, "")
 	}
 	u, err := url.Parse(strings.TrimSpace(r.URL))
 	if err != nil || u.Host == "" || u.Opaque != "" {
@@ -687,13 +708,17 @@ func (m masker) mask(s string) string {
 }
 
 // clip bounds a script-supplied string; clipping happens after masking so a
-// cut can never expose part of a secret that masking would have hidden.
+// cut can never expose part of a secret that masking would have hidden. It
+// reads only as far as the bound.
 func clip(s string) string {
-	if utf8.RuneCountInString(s) <= maxText {
-		return s
+	n := 0
+	for i := range s {
+		if n == maxText {
+			return s[:i] + "…"
+		}
+		n++
 	}
-	r := []rune(s)
-	return string(r[:maxText]) + "…"
+	return s
 }
 
 // Basis says how the balance was formed from several items.

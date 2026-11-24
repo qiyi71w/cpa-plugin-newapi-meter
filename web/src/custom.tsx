@@ -67,10 +67,12 @@ function PlanTable(p: { plans: CustomPlan[] }) {
   );
 }
 
-/** The page's sentence for a failure the plugin explains itself. */
+/** The page's sentence for a failure the plugin explains itself. A code the
+ *  page has no sentence for gets the generic one, never the code itself. */
 export function reasonText(r: ScriptReason): string {
   const key = r.code === "uncaught" && r.field ? "uncaught_at" : r.code;
-  return tDynamic(`custom.reason.${key}`, r.code).replace("{field}", r.field ?? "");
+  const text = tDynamic(`custom.reason.${key}`, "");
+  return text ? text.replace("{field}", r.field ?? "") : t("custom.reason.unknown");
 }
 
 /** Why a custom query failed: the plugin's explanation, or the script's own reason or error text, quoted. */

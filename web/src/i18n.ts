@@ -301,7 +301,7 @@ const zh = {
   "failure.query_timeout": "查询超时",
   "failure.reported_invalid": "脚本报告账户不可用",
   "next.script_error": "按报错修改脚本，再测试一次。",
-  "next.query_timeout": "请求和脚本合计超过 10 秒，已被中断。检查脚本里有没有死循环，或者请求地址是否响应太慢。",
+  "next.query_timeout": "请求和脚本合计超过 10 秒，插件已停止等待。脚本代码会被中断，但正则、排序等内置操作可能还要在后台运行一会儿。检查脚本里有没有死循环或很重的计算，以及请求地址是否响应太慢。",
   "next.reported_invalid": "脚本根据服务的响应判断账户不可用。检查占位符的取值，或者到服务上查看这个账户。",
   "customNext.site_unreachable": "检查脚本里的请求地址和网络连接，然后重试。",
   "customNext.credential_invalid": "服务拒绝了请求。检查 apiKey、accessToken 等占位符的取值。",
@@ -332,6 +332,7 @@ const zh = {
   "custom.reason.script_failed": "脚本运行失败，引擎没有给出原因。",
   "custom.reason.uncaught": "脚本抛出了一个无法转成文字的值。",
   "custom.reason.uncaught_at": "脚本在 {field} 抛出了一个无法转成文字的值。",
+  "custom.reason.unknown": "插件无法说明脚本哪里出了问题。检查 request 和 extractor 的写法，以及脚本有没有改动 Object.prototype 等内置对象。",
 } as const;
 
 export type MessageKey = keyof typeof zh;
@@ -635,7 +636,7 @@ const en: Record<MessageKey, string> = {
   "failure.query_timeout": "Query timed out",
   "failure.reported_invalid": "Script reports the account unavailable",
   "next.script_error": "Fix the script as described above, then test it again.",
-  "next.query_timeout": "The request and script together took more than 10 seconds and were stopped. Check the script for an endless loop, or whether the requested address answers too slowly.",
+  "next.query_timeout": "The request and script together took more than 10 seconds, so the plugin stopped waiting. Script code is interrupted, but built-in operations such as regular expressions or sorting may keep running in the background for a while. Check the script for endless loops or heavy work, and whether the requested address answers too slowly.",
   "next.reported_invalid": "The script judged the account unavailable from the service's response. Check the placeholder values, or look at the account on the service.",
   "customNext.site_unreachable": "Check the request address in the script and the network connection, then retry.",
   "customNext.credential_invalid": "The service refused the request. Check placeholder values such as apiKey and accessToken.",
@@ -666,6 +667,7 @@ const en: Record<MessageKey, string> = {
   "custom.reason.script_failed": "The script failed and the engine gave no reason.",
   "custom.reason.uncaught": "The script threw a value that cannot be shown as text.",
   "custom.reason.uncaught_at": "The script threw a value at {field} that cannot be shown as text.",
+  "custom.reason.unknown": "The plugin cannot tell what went wrong in the script. Check how request and extractor are written, and whether the script changes built-ins such as Object.prototype.",
 };
 
 export type Lang = "zh" | "en";
