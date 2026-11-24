@@ -94,7 +94,7 @@ plugins:
 
 | 平台 | 验证状态 |
 |---|---|
-| windows/amd64 | 宿主内验收待完成 |
+| windows/amd64 | 已通过宿主内验收（EasyCLIProxyAPI 0.3.119，内置 CPA Core v8.1.2） |
 | windows/arm64 | 仅经 CI 验证 |
 | linux/amd64 | 仅经 CI 验证 |
 | linux/arm64 | 仅经 CI 验证 |
