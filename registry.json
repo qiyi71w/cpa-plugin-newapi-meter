@@ -12,7 +12,7 @@
       "tags": ["new-api", "balance", "usage"],
       "locales": {
         "zh-CN": {
-          "name": "余额用量 · NewAPI Meter",
+          "name": "NewAPI 余额用量",
           "description": "在 CPA 插件页查看多个 new-api 系站点账户的余额、今日花费和按模型用量。"
         }
       }

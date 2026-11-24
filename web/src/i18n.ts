@@ -3,7 +3,7 @@
 // the typecheck. Placeholders are written {name} and filled by t().
 
 const zh = {
-  "page.title": "余额用量 · NewAPI Meter",
+  "page.title": "NewAPI 余额用量",
 
   "state.ok": "正常",
   "state.low": "余额偏低",

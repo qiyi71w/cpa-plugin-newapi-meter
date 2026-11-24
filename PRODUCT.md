@@ -41,7 +41,7 @@ Preact + TypeScript，使用 bun 构建；页面静态资源内嵌进插件动�
 
 ## Brand Commitments
 
-- 名称：NewAPI Meter；宿主菜单名：余额用量 · NewAPI Meter。
+- 名称：NewAPI Meter；宿主菜单名：NewAPI 余额用量。
 - 页面不加载任何第三方脚本、字体、图片或 CDN 资源；所有资源离线内嵌。
 - 公开内容（界面、文档、截图、示例）不得出现任何真实站点地址或凭据，示例使用 example.com 等占位。
 

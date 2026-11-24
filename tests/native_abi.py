@@ -196,7 +196,7 @@ def main(path):
 
     mreg = call("management.register", {"BasePath": "/v0/management", "ResourceBasePath": "/v0/resource/plugins/newapi-meter"})
     assert [r["Path"] for r in mreg["resources"]] == [PAGE]
-    assert mreg["resources"][0]["Menu"] == "余额用量 · NewAPI Meter"
+    assert mreg["resources"][0]["Menu"] == "NewAPI 余额用量"
     routes = {(r["Method"], r["Path"]) for r in mreg["routes"]}
     assert routes == {("GET", ROUTE + "/accounts"), ("POST", ROUTE + "/accounts"), ("PUT", ROUTE + "/accounts"),
                       ("DELETE", ROUTE + "/accounts"), ("GET", ROUTE + "/overview"),
