@@ -1,6 +1,6 @@
 // Period rules of the detail controls (bun test tests/web).
 import { describe, expect, test } from "bun:test";
-import { addDays, checkCustom, seriesOf, shapeOf, valuesOf } from "../../web/src/period-model";
+import { addDays, checkCustom, commitCustom, seriesOf, shapeOf, valuesOf } from "../../web/src/period-model";
 
 const TODAY = "2026-11-23";
 
@@ -21,6 +21,42 @@ describe("custom period input", () => {
     expect(checkCustom("2026-11-20", "2026-11-24", TODAY)).toEqual({ ok: false, reason: "future" });
     expect(checkCustom("2026-11-25", "2026-11-20", TODAY)).toEqual({ ok: false, reason: "future" });
     expect(checkCustom("", "2026-11-20", TODAY)).toEqual({ ok: false, reason: "incomplete" });
+  });
+});
+
+describe("committing custom dates", () => {
+  const applied = { start: "2026-10-25", end: TODAY };
+
+  test("a completed edit of one field queries once and leaves the other alone", () => {
+    // The keyboard path 1 1 2 1 2 0 2 6 into the end field ends as 2026-11-21.
+    expect(commitCustom({ start: "2026-10-25", end: "2026-11-21" }, applied, TODAY)).toEqual({
+      draft: { start: "2026-10-25", end: "2026-11-21" },
+      apply: { start: "2026-10-25", end: "2026-11-21" },
+      hint: null,
+    });
+  });
+
+  test("an unchanged range is not queried again", () => {
+    expect(commitCustom(applied, applied, TODAY)).toEqual({ draft: applied, apply: null, hint: null });
+  });
+
+  test("a reversed range is swapped once, at commit", () => {
+    expect(commitCustom({ start: "2026-10-25", end: "2026-10-01" }, applied, TODAY)).toEqual({
+      draft: { start: "2026-10-01", end: "2026-10-25" },
+      apply: { start: "2026-10-01", end: "2026-10-25" },
+      hint: "swapped",
+    });
+  });
+
+  test("too long or future ranges keep the draft and their hint, without a query", () => {
+    const long = { start: "2024-01-01", end: TODAY };
+    expect(commitCustom(long, applied, TODAY)).toEqual({ draft: long, apply: null, hint: "too_long", days: 1058 });
+    const future = { start: "2026-10-25", end: "2026-12-12" };
+    expect(commitCustom(future, applied, TODAY)).toEqual({ draft: future, apply: null, hint: "future", days: undefined });
+  });
+
+  test("an incomplete field falls back to the applied range", () => {
+    expect(commitCustom({ start: "2026-10-25", end: "" }, applied, TODAY)).toEqual({ draft: applied, apply: null, hint: null });
   });
 });
 

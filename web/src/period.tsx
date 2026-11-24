@@ -10,7 +10,7 @@ import { Icon } from "./icons";
 import {
   PRESETS,
   bucketParts,
-  checkCustom,
+  commitCustom,
   colorOf,
   rangeOf,
   sameChoice,
@@ -36,46 +36,71 @@ type Trend = "requests" | "tokens";
 
 // ---------- period control ----------
 
+// Keys that do not edit a date segment; any other key in a date input is typing.
+const NON_EDIT_KEYS: Record<string, true> = { Tab: true, Shift: true, Enter: true, Escape: true, Control: true, Alt: true, Meta: true };
+
+/** Custom start/end dates. Chromium date inputs fire `change` after every
+ *  segment keystroke that happens to form a valid date, so typed changes stay a
+ *  draft until the edit completes: focus leaves the pair, or Enter. A change
+ *  with no keystroke before it is a picker selection and commits at once. */
 function CustomDates(p: { choice: PeriodChoice; today: string; onApply: (r: Range) => void }) {
-  const [draft, setDraft] = useState<Range>(() => rangeOf(p.choice, p.today));
+  const [draft, setDraftState] = useState<Range>(() => rangeOf(p.choice, p.today));
+  // The handlers read the latest draft before a re-render reaches them.
+  const latest = useRef(draft);
+  const typing = useRef(false);
   const [hint, setHint] = useState<{ tone: "info" | "warn"; text: string } | null>(null);
-  const change = (field: keyof Range, value: string) => {
-    const next = { ...draft, [field]: value };
-    const c = checkCustom(next.start, next.end, p.today);
-    if (c.ok) {
-      setDraft({ start: c.start, end: c.end });
-      setHint(c.swapped ? { tone: "info", text: t("period.swapped") } : null);
-      p.onApply({ start: c.start, end: c.end });
-      return;
-    }
-    setDraft(next);
-    if (c.reason === "too_long") setHint({ tone: "warn", text: t("period.tooLong", { days: c.days ?? 0 }) });
-    else if (c.reason === "future") setHint({ tone: "warn", text: t("period.future", { today: dayLabel(p.today, p.today.slice(0, 4)) }) });
-    else setHint(null);
+  const setDraft = (r: Range) => {
+    latest.current = r;
+    setDraftState(r);
   };
+  const commit = () => {
+    typing.current = false;
+    const c = commitCustom(latest.current, rangeOf(p.choice, p.today), p.today);
+    setDraft(c.draft);
+    if (c.hint === "swapped") setHint({ tone: "info", text: t("period.swapped") });
+    else if (c.hint === "too_long") setHint({ tone: "warn", text: t("period.tooLong", { days: c.days ?? 0 }) });
+    else if (c.hint === "future") setHint({ tone: "warn", text: t("period.future", { today: dayLabel(p.today, p.today.slice(0, 4)) }) });
+    else setHint(null);
+    if (c.apply) p.onApply(c.apply);
+  };
+  const change = (field: keyof Range, value: string) => {
+    setDraft({ ...latest.current, [field]: value });
+    if (typing.current) setHint(null);
+    else commit();
+  };
+  const onKeyDown = (e: KeyboardEvent) => {
+    if (e.key === "Enter") commit();
+    else if (!NON_EDIT_KEYS[e.key]) typing.current = true;
+  };
+  const onFocusOut = (e: FocusEvent) => {
+    const to = e.relatedTarget as HTMLElement | null;
+    if (to && (e.currentTarget as HTMLElement).contains(to)) return;
+    // Leaving for another preset abandons the draft instead of querying it first.
+    if (to?.closest(".nm-period > .nm-pseg") && to.getAttribute("aria-pressed") === "false") return;
+    commit();
+  };
+  const input = (field: keyof Range, label: string) => (
+    <input
+      class="nm-date"
+      type="date"
+      value={draft[field]}
+      max={p.today}
+      aria-label={label}
+      onKeyDown={onKeyDown}
+      // A pointer opens the picker or picks a segment; a later change without typing is a selection.
+      onPointerDown={() => (typing.current = false)}
+      onChange={(e) => change(field, e.currentTarget.value)}
+    />
+  );
   return (
-    <div class="nm-custom">
+    <div class="nm-custom" onFocusOut={onFocusOut}>
       <label class="nm-date-label">
         {t("period.from")}
-        <input
-          class="nm-date"
-          type="date"
-          value={draft.start}
-          max={p.today}
-          aria-label={t("period.startDate")}
-          onChange={(e) => change("start", e.currentTarget.value)}
-        />
+        {input("start", t("period.startDate"))}
       </label>
       <label class="nm-date-label">
         {t("period.to")}
-        <input
-          class="nm-date"
-          type="date"
-          value={draft.end}
-          max={p.today}
-          aria-label={t("period.endDate")}
-          onChange={(e) => change("end", e.currentTarget.value)}
-        />
+        {input("end", t("period.endDate"))}
       </label>
       <p class="nm-period-hint" role="status" data-tone={hint?.tone}>
         {hint?.text}

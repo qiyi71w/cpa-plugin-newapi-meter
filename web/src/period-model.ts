@@ -74,6 +74,28 @@ export function checkCustom(start: string, end: string, today: string): CustomCh
   return { ok: true, start, end, swapped };
 }
 
+export interface CustomCommit {
+  /** what the inputs show after the commit */
+  draft: Range;
+  /** the range to query, or null when nothing new is applied */
+  apply: Range | null;
+  hint: "swapped" | "too_long" | "future" | null;
+  days?: number;
+}
+
+/** Commits the dates in the inputs once an edit is complete (focus left the
+ *  date pair, Enter, or a picker selection); keystrokes before that are only
+ *  a draft. A reversed pair is swapped; a too-long or future range is kept on
+ *  screen with its hint but not queried; an incomplete pair falls back to the
+ *  applied range; an unchanged range is not queried again. */
+export function commitCustom(draft: Range, applied: Range, today: string): CustomCommit {
+  const c = checkCustom(draft.start, draft.end, today);
+  if (!c.ok) return c.reason === "incomplete" ? { draft: applied, apply: null, hint: null } : { draft, apply: null, hint: c.reason, days: c.days };
+  const next = { start: c.start, end: c.end };
+  const same = next.start === applied.start && next.end === applied.end;
+  return { draft: next, apply: same ? null : next, hint: c.swapped ? "swapped" : null };
+}
+
 export function sameChoice(a: PeriodChoice, b: PeriodChoice): boolean {
   return a.preset === b.preset && (a.preset !== "custom" || (a.start === b.start && a.end === b.end));
 }
