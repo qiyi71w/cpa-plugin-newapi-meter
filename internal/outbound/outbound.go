@@ -126,17 +126,18 @@ func New(host Host) *Client {
 const maxRedirects = 10
 
 // checkRedirect follows a redirect only while every hop stays on the site of
-// the original request. net/http rebuilds each hop from the original
-// request, so following a redirect elsewhere would hand that site the
-// headers (all but a few), the body on 307/308 and, through Referer, the
-// original URL with its query. A redirect that leaves the site is not
-// followed: the 3xx response itself is returned and classified like any
-// other non-2xx answer.
+// the original request and never goes from https back to http. net/http
+// rebuilds each hop from the original request, so following a redirect
+// elsewhere would hand that site the headers (all but a few), the body on
+// 307/308 and, through Referer, the original URL with its query. A redirect
+// that is not followed returns the 3xx response itself, which is classified
+// like any other non-2xx answer.
 func checkRedirect(req *http.Request, via []*http.Request) error {
 	if len(via) >= maxRedirects {
 		return errors.New("stopped after 10 redirects")
 	}
-	if !sameSite(via[0].URL, req.URL) {
+	last := via[len(via)-1].URL
+	if !sameSite(via[0].URL, req.URL) || (strings.EqualFold(last.Scheme, "https") && strings.EqualFold(req.URL.Scheme, "http")) {
 		return http.ErrUseLastResponse
 	}
 	return nil
@@ -145,7 +146,7 @@ func checkRedirect(req *http.Request, via []*http.Request) error {
 // sameSite reports whether to is on the site of from: same scheme, host and
 // port, or the https upgrade of an http URL on its default port.
 func sameSite(from, to *url.URL) bool {
-	if !strings.EqualFold(from.Hostname(), to.Hostname()) || from.Hostname() == "" {
+	if !sameHost(from.Hostname(), to.Hostname()) {
 		return false
 	}
 	fs, ts := strings.ToLower(from.Scheme), strings.ToLower(to.Scheme)
@@ -154,6 +155,42 @@ func sameSite(from, to *url.URL) bool {
 		return fp == tp
 	}
 	return fs == "http" && ts == "https" && fp == "80" && tp == "443"
+}
+
+// sameHost compares host names the way the transport resolves them: an ASCII
+// name ignores ASCII letter case and nothing else; a non-ASCII name (sent
+// after IDNA conversion) and an IPv6 zone (an interface name, case-sensitive)
+// must match exactly. Unicode case folding is never used: it equates names
+// such as σ/ς that resolve to different hosts.
+func sameHost(a, b string) bool {
+	if a == "" || len(a) != len(b) {
+		return false
+	}
+	if strings.Contains(a, "%") || !isASCII(a) || !isASCII(b) {
+		return a == b
+	}
+	for i := range len(a) {
+		if lowerASCII(a[i]) != lowerASCII(b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func isASCII(s string) bool {
+	for i := range len(s) {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
+func lowerASCII(c byte) byte {
+	if 'A' <= c && c <= 'Z' {
+		return c + ('a' - 'A')
+	}
+	return c
 }
 
 func port(u *url.URL) string {

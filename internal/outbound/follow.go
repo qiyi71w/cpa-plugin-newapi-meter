@@ -113,20 +113,21 @@ func (c *Client) doFollow(ctx context.Context, req Request) (*Response, error) {
 }
 
 // withOriginReferer returns h with a Referer that names only the request's
-// origin, unless h already has one. The host follows every redirect itself;
-// without an explicit Referer, net/http would send the full original URL,
-// query included, to wherever the site redirects. Credential-like headers
-// are dropped by the host on a cross-origin redirect; other headers and the
-// body on 307/308 are not, which the plugin cannot change.
+// origin, unless h already carries a non-empty one. The host follows every
+// redirect itself, and net/http fills an absent or empty Referer with the
+// previous hop's full URL, query included, on the way to wherever the site
+// redirects. Which other headers the host drops on a cross-origin redirect
+// depends on the CPA version (see README); the body on 307/308 always goes
+// along, which the plugin cannot change.
 func withOriginReferer(h http.Header, u *url.URL) http.Header {
-	for k := range h {
-		if strings.EqualFold(k, "Referer") {
-			return h
-		}
+	if h.Get("Referer") != "" {
+		return h
 	}
 	out := make(http.Header, len(h)+1)
 	for k, vs := range h {
-		out[k] = vs
+		if !strings.EqualFold(k, "Referer") {
+			out[k] = vs
+		}
 	}
 	out["Referer"] = []string{strings.ToLower(u.Scheme) + "://" + u.Host + "/"}
 	return out
