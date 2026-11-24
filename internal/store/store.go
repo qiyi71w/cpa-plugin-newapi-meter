@@ -185,10 +185,11 @@ func (s *Store) checkDir() error {
 
 // readFile reads the data file, first restricting it to 0600 when it grants
 // group or other access (for example a restored backup). Anything but a
-// regular file (a directory, or a symlink to one) is refused before its mode
-// is touched. It reports fs.ErrNotExist when there is no file yet.
+// regular file (a directory, a FIFO, or a symlink to one) is refused, without
+// waiting on it, before its mode is touched. It reports fs.ErrNotExist when
+// there is no file yet.
 func (s *Store) readFile() ([]byte, error) {
-	f, err := os.Open(s.path)
+	f, err := openDataFile(s.path)
 	if err != nil {
 		return nil, err
 	}
