@@ -171,9 +171,7 @@ func resolveQuery(out *Account, in Input, prev *Account) error {
 	switch out.Source {
 	case SourceNewAPI:
 	case SourceCustom:
-		// The record format already holds custom-query fields; this build has
-		// no custom-query runtime, so it does not accept such accounts yet.
-		return &ValidationError{"source", ReasonUnsupported}
+		return resolveCustom(out, prev)
 	default:
 		return &ValidationError{"source", ReasonInvalid}
 	}
@@ -200,6 +198,30 @@ func resolveQuery(out *Account, in Input, prev *Account) error {
 	if out.UserID != "" && !isDigits(out.UserID) {
 		return &ValidationError{"user_id", ReasonNotNumeric}
 	}
+	return nil
+}
+
+// resolveCustom checks a custom-query account. The script must be present;
+// baseUrl is optional but, when given, is a site address like a built-in
+// one and also becomes the account's base_url (the host shown in lists).
+// The built-in credential and user ID do not apply and are cleared.
+func resolveCustom(out *Account, prev *Account) error {
+	if strings.TrimSpace(out.CustomScript) == "" {
+		return &ValidationError{"custom_script", ReasonRequired}
+	}
+	ph := &out.CustomPlaceholders
+	if ph.BaseURL != "" {
+		base, err := NormalizeBaseURL(ph.BaseURL)
+		if err != nil {
+			return &ValidationError{"custom_placeholders.baseUrl", err.(*ValidationError).Reason}
+		}
+		ph.BaseURL = base
+	}
+	if prev != nil {
+		keepSecret(&ph.APIKey, prev.CustomPlaceholders.APIKey)
+		keepSecret(&ph.AccessToken, prev.CustomPlaceholders.AccessToken)
+	}
+	out.BaseURL, out.Credential, out.UserID = ph.BaseURL, "", ""
 	return nil
 }
 

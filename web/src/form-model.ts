@@ -8,6 +8,7 @@ import type { AccountInput, AccountView, CredentialKind, ProxyMode, Source } fro
  *  fields in the form and its own branch of the connection test. */
 export const SOURCE_OPTIONS: readonly { value: Source; label: MessageKey; hint: MessageKey }[] = [
   { value: "newapi", label: "source.newapi", hint: "source.newapi.hint" },
+  { value: "custom", label: "source.custom", hint: "source.custom.hint" },
 ];
 
 export const PROXY_OPTIONS: readonly ProxyMode[] = ["follow", "direct"];
@@ -24,26 +25,64 @@ export interface FormState {
   /** as typed; blank = no threshold */
   threshold: string;
   proxy: ProxyMode;
+  /** custom query: the script and its placeholder values */
+  script: string;
+  phBaseUrl: string;
+  /** blank on edit = keep the stored value */
+  apiKey: string;
+  /** blank on edit = keep the stored value */
+  accessToken: string;
+  phUserId: string;
 }
 
-export type Field = "name" | "source" | "base_url" | "credential" | "user_id" | "low_balance_threshold" | "proxy";
+export type Field =
+  | "name"
+  | "source"
+  | "base_url"
+  | "credential"
+  | "user_id"
+  | "low_balance_threshold"
+  | "proxy"
+  | "custom_script"
+  | "custom_placeholders.baseUrl"
+  | "custom_placeholders.apiKey"
+  | "custom_placeholders.accessToken"
+  | "custom_placeholders.userId";
 
 /** Field → reason (`required`, `invalid`, `scheme`, `not_numeric`, `negative`, `unsupported`). */
 export type FieldErrors = Partial<Record<Field, string>>;
 
 export function emptyForm(): FormState {
-  return { name: "", source: "newapi", baseUrl: "", credential: "", userId: "", threshold: "", proxy: "follow" };
+  return {
+    name: "",
+    source: "newapi",
+    baseUrl: "",
+    credential: "",
+    userId: "",
+    threshold: "",
+    proxy: "follow",
+    script: "",
+    phBaseUrl: "",
+    apiKey: "",
+    accessToken: "",
+    phUserId: "",
+  };
 }
 
 export function formOf(a: AccountView): FormState {
   return {
     name: a.name,
     source: a.source,
-    baseUrl: a.base_url,
+    baseUrl: a.source === "custom" ? "" : a.base_url,
     credential: "",
     userId: a.user_id,
     threshold: a.low_balance_threshold == null ? "" : String(a.low_balance_threshold),
     proxy: a.proxy,
+    script: a.custom_script,
+    phBaseUrl: a.custom_placeholders.baseUrl,
+    apiKey: "",
+    accessToken: "",
+    phUserId: a.custom_placeholders.userId,
   };
 }
 
@@ -93,13 +132,19 @@ function thresholdValue(raw: string): number | null {
 export function validate(f: FormState, stored: AccountView | null, forTest = false): FieldErrors {
   const e: FieldErrors = {};
   if (!forTest && !f.name.trim()) e.name = "required";
-  const url = baseUrlError(f.baseUrl);
-  if (url) e.base_url = url;
-  if (!f.credential.trim() && !stored?.credential_masked) e.credential = "required";
-  if (needsUserId(f, stored)) {
-    const id = f.userId.trim();
-    if (!id) e.user_id = "required";
-    else if (!/^[0-9]+$/.test(id)) e.user_id = "not_numeric";
+  if (f.source === "custom") {
+    if (!f.script.trim()) e.custom_script = "required";
+    const base = f.phBaseUrl.trim() ? baseUrlError(f.phBaseUrl) : null;
+    if (base) e["custom_placeholders.baseUrl"] = base;
+  } else {
+    const url = baseUrlError(f.baseUrl);
+    if (url) e.base_url = url;
+    if (!f.credential.trim() && !stored?.credential_masked) e.credential = "required";
+    if (needsUserId(f, stored)) {
+      const id = f.userId.trim();
+      if (!id) e.user_id = "required";
+      else if (!/^[0-9]+$/.test(id)) e.user_id = "not_numeric";
+    }
   }
   if (!forTest) {
     const t = thresholdValue(f.threshold);
@@ -111,19 +156,48 @@ export function validate(f: FormState, stored: AccountView | null, forTest = fal
 
 export function toInput(f: FormState, stored: AccountView | null): AccountInput {
   const t = thresholdValue(f.threshold);
+  const custom = f.source === "custom";
   return {
     name: f.name.trim(),
     source: f.source,
-    base_url: trimBaseUrl(f.baseUrl),
-    credential: f.credential.trim(),
-    user_id: needsUserId(f, stored) ? f.userId.trim() : "",
+    base_url: custom ? "" : trimBaseUrl(f.baseUrl),
+    credential: custom ? "" : f.credential.trim(),
+    user_id: !custom && needsUserId(f, stored) ? f.userId.trim() : "",
     low_balance_threshold: t !== null && Number.isFinite(t) ? t : null,
     proxy: f.proxy,
+    custom_script: custom ? f.script : "",
+    custom_placeholders: custom
+      ? { baseUrl: trimBaseUrl(f.phBaseUrl), apiKey: f.apiKey.trim(), accessToken: f.accessToken.trim(), userId: f.phUserId.trim() }
+      : { baseUrl: "", apiKey: "", accessToken: "", userId: "" },
   };
 }
 
 /** Fields whose change makes an earlier connection test stale. */
-export const TESTED_FIELDS: readonly (keyof FormState)[] = ["source", "baseUrl", "credential", "userId", "proxy"];
+export const TESTED_FIELDS: readonly (keyof FormState)[] = [
+  "source",
+  "baseUrl",
+  "credential",
+  "userId",
+  "proxy",
+  "script",
+  "phBaseUrl",
+  "apiKey",
+  "accessToken",
+  "phUserId",
+];
 
-/** Order in which errors take focus: the form's visual order. */
-export const FIELD_ORDER: readonly Field[] = ["name", "source", "base_url", "credential", "user_id", "low_balance_threshold", "proxy"];
+/** Order in which errors take focus: the form's visual order (one source's fields show at a time). */
+export const FIELD_ORDER: readonly Field[] = [
+  "name",
+  "source",
+  "base_url",
+  "credential",
+  "user_id",
+  "custom_script",
+  "custom_placeholders.baseUrl",
+  "custom_placeholders.apiKey",
+  "custom_placeholders.accessToken",
+  "custom_placeholders.userId",
+  "low_balance_threshold",
+  "proxy",
+];

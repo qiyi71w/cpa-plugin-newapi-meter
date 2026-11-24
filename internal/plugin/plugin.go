@@ -15,6 +15,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/qiyi71w/cpa-plugin-newapi-meter/internal/cache"
+	"github.com/qiyi71w/cpa-plugin-newapi-meter/internal/customquery"
 	"github.com/qiyi71w/cpa-plugin-newapi-meter/internal/newapi"
 	"github.com/qiyi71w/cpa-plugin-newapi-meter/internal/outbound"
 	"github.com/qiyi71w/cpa-plugin-newapi-meter/internal/store"
@@ -64,6 +65,8 @@ type Plugin struct {
 	defaultStore func() (*store.Store, error)
 	source       *newapi.Source
 	overviews    *cache.Cache[newapi.Reading]
+	custom       *customquery.Runner
+	customs      *cache.Cache[customquery.Result]
 
 	mu       sync.RWMutex
 	store    *store.Store
@@ -99,6 +102,8 @@ func New(opts Options) *Plugin {
 		storeErr:     fmt.Errorf("plugin not registered"),
 	}
 	p.source = &newapi.Source{HTTP: p.http, Now: p.now, UserAgent: "cpa-plugin-newapi-meter/" + Version}
+	p.custom = &customquery.Runner{HTTP: p.http, Now: p.now}
+	p.customs = cache.New[customquery.Result](cache.TTL, opts.Now)
 	return p
 }
 

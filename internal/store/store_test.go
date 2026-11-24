@@ -102,7 +102,10 @@ func TestValidation(t *testing.T) {
 		{"user id numeric", Input{Name: "x", BaseURL: "https://x.example.com", Credential: legacy, UserID: "12a"}, "user_id", ReasonNotNumeric},
 		{"threshold non-negative", Input{Name: "x", BaseURL: "https://x.example.com", Credential: pat, LowBalanceThreshold: ptr(-1)}, "low_balance_threshold", ReasonNegative},
 		{"proxy option", Input{Name: "x", BaseURL: "https://x.example.com", Credential: pat, Proxy: "socks"}, "proxy", ReasonInvalid},
-		{"custom source not yet supported", Input{Name: "x", Source: SourceCustom, BaseURL: "https://x.example.com", Credential: pat}, "source", ReasonUnsupported},
+		{"custom script required", Input{Name: "x", Source: SourceCustom, Credential: pat}, "custom_script", ReasonRequired},
+		{"custom baseUrl scheme", Input{Name: "x", Source: SourceCustom, CustomScript: "({})", CustomPlaceholders: Placeholders{BaseURL: "ftp://x.example.com"}}, "custom_placeholders.baseUrl", ReasonScheme},
+		{"custom baseUrl query", Input{Name: "x", Source: SourceCustom, CustomScript: "({})", CustomPlaceholders: Placeholders{BaseURL: "https://x.example.com/?a=1"}}, "custom_placeholders.baseUrl", ReasonInvalid},
+		{"unknown source", Input{Name: "x", Source: "other", BaseURL: "https://x.example.com", Credential: pat}, "source", ReasonInvalid},
 	}
 	s := openTemp(t)
 	for _, tc := range cases {
@@ -140,6 +143,39 @@ func TestUpdateKeepsBlankOrMaskedSecrets(t *testing.T) {
 	}
 	if _, err := s.Update("acc_missing", patInput("y")); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("missing id: %v", err)
+	}
+}
+
+func TestCustomAccountKeepsSecretsAndTakesHostFromBaseURL(t *testing.T) {
+	const key, token = "sk-synthetic-custom-api-key-0003", "synthetic-custom-access-token-0004"
+	s := openTemp(t)
+	in := Input{
+		Name: "Custom", Source: SourceCustom, CustomScript: "({ request: {}, extractor: function () {} })",
+		// Built-in fields do not apply to a custom query and are dropped.
+		BaseURL: "https://ignored.example.com", Credential: pat, UserID: "9",
+		CustomPlaceholders: Placeholders{BaseURL: " https://api.example.com/v1/ ", APIKey: key, AccessToken: token, UserID: "u-1"},
+	}
+	a, err := s.Create(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ph := a.CustomPlaceholders
+	if a.BaseURL != "https://api.example.com/v1" || ph.BaseURL != a.BaseURL || a.Credential != "" || a.UserID != "" || ph.UserID != "u-1" {
+		t.Fatalf("account = %+v", a)
+	}
+	// Blank and masked secrets keep the stored values; script and readable values are replaced.
+	in.CustomScript, in.CustomPlaceholders = "({ edited: true })", Placeholders{APIKey: "", AccessToken: Mask(token), UserID: "u-2"}
+	b, err := s.Update(a.ID, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.CustomPlaceholders.APIKey != key || b.CustomPlaceholders.AccessToken != token || b.CustomPlaceholders.UserID != "u-2" || b.CustomScript != "({ edited: true })" || b.BaseURL != "" {
+		t.Fatalf("updated = %+v", b)
+	}
+	// Resolve (connection test) applies the same rules without writing.
+	r, err := Resolve(Input{Source: SourceCustom, CustomScript: "({})"}, &b)
+	if err != nil || r.CustomPlaceholders.APIKey != key || r.CustomPlaceholders.AccessToken != token {
+		t.Fatalf("resolve = %+v %v", r, err)
 	}
 }
 

@@ -31,6 +31,13 @@ const (
 	SiteError Code = "site_error"
 	// BadResponse: anything else that cannot be used, including JSON success:false.
 	BadResponse Code = "bad_response"
+	// ScriptError: a custom-query script failed to evaluate, described a
+	// request the plugin will not send, or returned an unusable result.
+	ScriptError Code = "script_error"
+	// QueryTimeout: a custom query (request plus script) ran past its time limit.
+	QueryTimeout Code = "query_timeout"
+	// ReportedInvalid: a custom-query script returned isValid: false.
+	ReportedInvalid Code = "reported_invalid"
 )
 
 // Failure is one classified failure. Diagnostic is a short machine code
@@ -190,6 +197,9 @@ var priority = map[Code]int{
 	SiteUnreachable:    4,
 	SiteError:          5,
 	BadResponse:        6,
+	ReportedInvalid:    7,
+	ScriptError:        8,
+	QueryTimeout:       9,
 }
 
 // Primary returns the most actionable failure among probes (credentialed

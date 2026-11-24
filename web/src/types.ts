@@ -9,7 +9,10 @@ export type FailureCode =
   | "credential_invalid"
   | "site_blocked"
   | "site_error"
-  | "bad_response";
+  | "bad_response"
+  | "script_error"
+  | "query_timeout"
+  | "reported_invalid";
 
 export interface Failure {
   code: FailureCode;
@@ -24,7 +27,7 @@ export interface Probe {
 }
 
 export interface Currency {
-  /** USD | CNY | CUSTOM | TOKENS */
+  /** USD | CNY | CUSTOM | TOKENS, or UNIT for a custom-query unit shown verbatim (symbol = the unit) */
   code: string;
   symbol: string;
 }
@@ -54,6 +57,8 @@ export interface OverviewAccount {
   last_success_at: string | null;
   cached: boolean;
   unsupported_source?: boolean;
+  /** custom-query accounts only */
+  custom?: CustomView;
 }
 
 export interface Overview {
@@ -105,6 +110,9 @@ export interface AccountInput {
   user_id: string;
   low_balance_threshold: number | null;
   proxy: ProxyMode;
+  custom_script: string;
+  /** blank apiKey / accessToken keep (or, for a test, use) the stored ones of `id` */
+  custom_placeholders: { baseUrl: string; apiKey: string; accessToken: string; userId: string };
 }
 
 /** Answer of POST /accounts/test. */
@@ -119,4 +127,36 @@ export interface ConnectionTest {
   data_export: boolean | null;
   failure: Failure | null;
   failures: Probe[];
+  /** custom-query tests only: the extraction result or the script error */
+  custom?: CustomTest;
+}
+
+/** One item the custom-query extractor returned. Strings come from the script. */
+export interface CustomPlan {
+  plan_name: string;
+  extra: string;
+  remaining: number | null;
+  used: number | null;
+  total: number | null;
+  today_spend: number | null;
+  unit: string;
+  currency: Currency;
+  is_valid: boolean | null;
+  invalid_message?: string;
+}
+
+export interface CustomView {
+  /** sum: every plan has one unit (合计); first: units differ (第一项); absent for a single item */
+  balance_basis?: "sum" | "first";
+  total_quota: number | null;
+  plans: CustomPlan[];
+  invalid_message?: string;
+  /** engine or script error, substituted secrets masked */
+  script_error?: string;
+}
+
+export interface CustomTest extends CustomView {
+  balance: number | null;
+  total_used: number | null;
+  today_spend: number | null;
 }

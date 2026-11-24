@@ -1290,3 +1290,194 @@ fieldset.nm-field > .nm-field-error {
     transition: none;
   }
 }
+
+/* ---------- custom query ---------- */
+
+/* 「合计」 / 「第一项」 beside a balance made from several plans */
+.nm-basis {
+  flex: none;
+  display: inline-block;
+  align-self: center;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--nm-text) 8%, transparent);
+  color: var(--nm-text-2);
+  font-size: var(--nm-fs-xs);
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 18px;
+  white-space: nowrap;
+  vertical-align: 1px;
+}
+.nm-tab-amt {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.nm-tab-unit {
+  margin-left: 4px;
+  font-size: var(--nm-fs-xs);
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--nm-text-2);
+}
+.nm-tab-sub .nm-basis {
+  margin: 0 6px 0 0;
+  font-size: 11px;
+  line-height: 16px;
+  vertical-align: 0;
+}
+.nm-tab[data-state="low"] .nm-basis {
+  color: var(--nm-warn-text);
+}
+
+.nm-script {
+  height: auto;
+  min-height: 220px;
+  padding: 10px 12px;
+  line-height: 1.55;
+  white-space: pre;
+  overflow: auto;
+  tab-size: 2;
+  resize: vertical;
+}
+
+.nm-risk {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  max-width: 68ch;
+  padding: 10px 12px;
+  border-radius: var(--nm-r-control);
+  background: var(--nm-warn-bg);
+  font-size: var(--nm-fs-sm);
+}
+.nm-risk svg {
+  flex: none;
+  margin-top: 2px;
+  color: var(--nm-warn-text);
+}
+.nm-risk p {
+  margin: 0;
+  color: var(--nm-text);
+}
+.nm-risk strong {
+  font-weight: 650;
+  color: var(--nm-warn-text);
+}
+
+fieldset.nm-placeholders > .nm-field-hint {
+  margin: 0 0 12px;
+}
+.nm-ph-grid {
+  align-items: start;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 14px 16px;
+}
+
+/* the script's own reason or error, quoted inside a test result or alert */
+.nm-quote {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.nm-quote-label {
+  margin: 0;
+  font-size: var(--nm-fs-xs);
+  font-weight: 600;
+  color: var(--nm-text-2);
+}
+.nm-quote-text {
+  max-width: 76ch;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--nm-border);
+  border-radius: var(--nm-r-control);
+  background: var(--nm-raised);
+  color: var(--nm-text);
+  font-size: var(--nm-fs-sm);
+  overflow-wrap: anywhere;
+}
+.nm-quote-text--code {
+  max-height: 180px;
+  overflow: auto;
+  font-family: var(--nm-mono);
+  font-size: var(--nm-fs-xs);
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.nm-plan-table {
+  width: 100%;
+  margin-top: 18px;
+  border-collapse: collapse;
+  font-size: var(--nm-fs-sm);
+}
+.nm-test .nm-plan-table {
+  margin-top: 6px;
+}
+.nm-plan-caption {
+  padding-bottom: 8px;
+  text-align: left;
+  font-size: var(--nm-fs-sm);
+  font-weight: 650;
+}
+.nm-plan-table th,
+.nm-plan-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--nm-border);
+  text-align: right;
+  vertical-align: top;
+  white-space: nowrap;
+}
+.nm-plan-table th:first-child {
+  padding-left: 0;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.nm-plan-table th:last-child,
+.nm-plan-table td:last-child {
+  padding-right: 0;
+}
+.nm-plan-table thead th {
+  padding-top: 0;
+  border-bottom-color: var(--nm-border-strong);
+  font-size: var(--nm-fs-xs);
+  font-weight: 600;
+  color: var(--nm-text-2);
+}
+.nm-plan-table tbody th {
+  font-weight: 600;
+}
+.nm-plan-table td {
+  color: var(--nm-text);
+}
+.nm-plan-table tr[data-invalid] td {
+  color: var(--nm-text-2);
+}
+.nm-plan-extra {
+  display: block;
+  font-size: var(--nm-fs-xs);
+  font-weight: 400;
+  color: var(--nm-text-2);
+}
+.nm-plan-flag {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--nm-danger-bg);
+  color: var(--nm-danger-text);
+  font-size: 11px;
+  line-height: 18px;
+}
+
+.nm-custom-note {
+  max-width: 68ch;
+  margin: 14px 0 0;
+  font-size: var(--nm-fs-xs);
+  color: var(--nm-text-2);
+}

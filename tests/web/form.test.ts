@@ -1,7 +1,9 @@
 // Account form rules (bun test tests/web).
 import { describe, expect, test } from "bun:test";
-import { baseUrlError, emptyForm, needsUserId, toInput, validate, type FormState } from "../../web/src/form-model";
-import type { AccountView } from "../../web/src/types";
+import { baseUrlError, emptyForm, formOf, needsUserId, toInput, validate, type FormState } from "../../web/src/form-model";
+import { money } from "../../web/src/format";
+import { totals } from "../../web/src/model";
+import type { AccountView, OverviewAccount } from "../../web/src/types";
 
 const PAT = "nap_synthetic_form_token_0001";
 const LEGACY = "synthetic-legacy-form-token-0002";
@@ -74,5 +76,56 @@ describe("form validation", () => {
     const e = validate(form({ name: "", credential: PAT, threshold: "abc" }), null, true);
     expect(e).toEqual({});
     expect(validate(form({ name: "" , credential: PAT }), null).name).toBe("required");
+  });
+});
+
+describe("custom query form", () => {
+  const custom = (over: Partial<FormState>): FormState => ({ ...emptyForm(), name: "Script", source: "custom", script: "({})", ...over });
+  const storedCustom: AccountView = {
+    ...stored,
+    source: "custom",
+    base_url: "https://api.example.com",
+    credential_masked: "",
+    credential_kind: "",
+    user_id: "",
+    custom_script: "({ request: {}, extractor: function () {} })",
+    custom_placeholders: { baseUrl: "https://api.example.com", apiKeyMasked: "sk-s••••0003", accessTokenMasked: "", userId: "u-1" },
+  };
+
+  test("needs a script; baseUrl is optional but must be http(s); no credential or user ID", () => {
+    expect(validate(custom({}), null)).toEqual({});
+    expect(validate(custom({ script: "  " }), null).custom_script).toBe("required");
+    expect(validate(custom({ phBaseUrl: "ftp://api.example.com" }), null)["custom_placeholders.baseUrl"]).toBe("scheme");
+    expect(validate(custom({ phBaseUrl: "https://api.example.com/?a=1" }), null)["custom_placeholders.baseUrl"]).toBe("invalid");
+    expect(validate(custom({ credential: "legacy-token" }), null)).toEqual({});
+  });
+
+  test("sends the script and placeholder values only; blank secrets keep the stored ones", () => {
+    const input = toInput(custom({ phBaseUrl: " https://api.example.com/ ", apiKey: " sk-new ", phUserId: " u-2 ", baseUrl: "https://x.example.com", credential: "nap_x" }), storedCustom);
+    expect(input.custom_script).toBe("({})");
+    expect(input.custom_placeholders).toEqual({ baseUrl: "https://api.example.com", apiKey: "sk-new", accessToken: "", userId: "u-2" });
+    expect(input.base_url).toBe("");
+    expect(input.credential).toBe("");
+    const edit = formOf(storedCustom);
+    expect(edit.apiKey).toBe("");
+    expect(edit.script).toBe(storedCustom.custom_script);
+    expect(edit.phUserId).toBe("u-1");
+  });
+});
+
+describe("custom units", () => {
+  test("units other than USD and CNY are shown verbatim", () => {
+    expect(money(12.5, { code: "UNIT", symbol: "credits" })).toBe("12.50 credits");
+    expect(money(3, { code: "UNIT", symbol: "" })).toBe("3.00");
+    expect(money(3, { code: "USD", symbol: "$" })).toBe("$3.00");
+  });
+
+  test("the total cell compares units: a custom USD account adds up with a built-in one", () => {
+    const acc = (id: string, currency: OverviewAccount["currency"], balance: number): OverviewAccount =>
+      ({ id, state: "ok", currency, balance, today_spend: 1 }) as OverviewAccount;
+    const usd = { code: "USD", symbol: "$" };
+    expect(totals([acc("a", usd, 2), acc("b", usd, 3)])?.balance).toBe(5);
+    expect(totals([acc("a", usd, 2), acc("b", { code: "UNIT", symbol: "credits" }, 3)])).toBeNull();
+    expect(totals([acc("a", { code: "UNIT", symbol: "credits" }, 2), acc("b", { code: "UNIT", symbol: "credits" }, 3)])?.balance).toBe(5);
   });
 });
