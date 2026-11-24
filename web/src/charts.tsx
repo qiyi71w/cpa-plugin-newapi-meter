@@ -63,12 +63,22 @@ function niceScale(v: number): { top: number; ticks: number[] } {
   return { top: ticks[count], ticks };
 }
 
+/**
+ * The hovered point's index while it still fits the data: the points can
+ * change under a hover (a new period arrives), and an index past the end
+ * means nothing is hovered.
+ */
+export function hoverAt(hover: number | null, n: number): number | null {
+  return hover != null && hover >= 0 && hover < n ? hover : null;
+}
+
 export function Chart(p: ChartProps) {
   const height = p.height ?? 216;
   const [box, w] = useWidth<HTMLDivElement>();
   const tip = useRef<HTMLDivElement>(null);
   const [hover, setHover] = useState<number | null>(null);
   const n = p.points.length;
+  const at = hoverAt(hover, n);
 
   const peak = Math.max(0, ...p.points.flatMap((pt) => (p.kind === "bars" ? [pt.values.reduce((a, b) => a + b, 0)] : pt.values)));
   const { top, ticks } = niceScale(peak);
@@ -84,10 +94,10 @@ export function Chart(p: ChartProps) {
   // Keep the tooltip inside the box: beside the hovered point, flipped left near the right edge.
   useLayoutEffect(() => {
     const el = tip.current;
-    if (!el || hover == null) return;
+    if (!el || at == null) return;
     const tw = el.offsetWidth;
     const th = el.offsetHeight;
-    const x = xOf(hover);
+    const x = xOf(at);
     let left = x + 12;
     if (left + tw > w) left = x - 12 - tw;
     left = Math.max(0, Math.min(left, w - tw));
@@ -105,7 +115,7 @@ export function Chart(p: ChartProps) {
 
   const onKeyDown = (e: KeyboardEvent) => {
     if (!n) return;
-    const cur = hover ?? n - 1;
+    const cur = at ?? n - 1;
     let next = -1;
     if (e.key === "ArrowRight") next = Math.min(n - 1, cur + 1);
     else if (e.key === "ArrowLeft") next = Math.max(0, cur - 1);
@@ -120,7 +130,7 @@ export function Chart(p: ChartProps) {
   const maxTicks = Math.max(1, Math.floor(innerW / 52));
   const every = p.tickSteps.find((s) => Math.ceil(n / s) <= maxTicks) ?? Math.ceil(n / maxTicks);
 
-  const hovered = hover != null ? p.points[hover] : null;
+  const hovered = at != null ? p.points[at] : null;
   const rows = hovered
     ? hovered.values
         .map((v, i) => ({ v, i }))
@@ -162,13 +172,13 @@ export function Chart(p: ChartProps) {
               </text>
             );
           })}
-          {hover != null && p.kind === "bars" && <rect class="nm-chart-hover" x={padL + band * hover} y={PAD.t} width={band} height={innerH} />}
+          {at != null && p.kind === "bars" && <rect class="nm-chart-hover" x={padL + band * at} y={PAD.t} width={band} height={innerH} />}
           {p.kind === "bars" ? <Bars {...p} band={band} xOf={xOf} innerH={innerH} top={top} /> : <Lines {...p} xOf={xOf} yOf={yOf} />}
-          {hover != null && p.kind === "lines" && (
+          {at != null && p.kind === "lines" && (
             <g>
-              <line class="nm-chart-cursor" x1={xOf(hover)} x2={xOf(hover)} y1={PAD.t} y2={PAD.t + innerH} />
+              <line class="nm-chart-cursor" x1={xOf(at)} x2={xOf(at)} y1={PAD.t} y2={PAD.t + innerH} />
               {p.series.map((s, k) => (
-                <circle key={k} cx={xOf(hover)} cy={yOf(p.points[hover].values[k] ?? 0)} r="3.5" fill="var(--nm-raised)" stroke={s.color} stroke-width="2" />
+                <circle key={k} cx={xOf(at)} cy={yOf(p.points[at].values[k] ?? 0)} r="3.5" fill="var(--nm-raised)" stroke={s.color} stroke-width="2" />
               ))}
             </g>
           )}
