@@ -342,7 +342,7 @@ plugins:
 
 错误响应形如 `{"error": {"code": "...", "field": "...", "reason": "...", "path": "..."}}`：`validation_failed`（带 `field` 和 `reason`）、`invalid_json`、`account_not_found`，以及数据文件相关的 `data_file_corrupt`、`data_file_newer`、`data_file_unavailable`（带 `path`，状态码 503）。`data_file_unavailable` 在目录或文件对其他用户开放时带 `reason`：`dir_not_private`（配置的数据目录给同组或其他用户留了权限，`path` 是该目录）或 `file_not_private`（数据文件无法收紧为 0600，`path` 是该文件）。另有三个与具体账户无关的错误：`invalid_request`（400，宿主转来的管理请求无法解析）、`method_not_allowed`（405，用 GET 以外的方法请求资源路由的页面）、`not_found`（404，没有与「方法 + 路径」匹配的路由）。
 
-查询行为：每个账户每种查询的结果在进程内缓存 60 秒；同一账户的并发查询合并成一次；单个站点请求 15 秒超时；自定义查询整体（请求加脚本）10 秒超时。
+查询行为：每个账户每种查询的结果在进程内缓存 60 秒，今日的查询（概况和自定义查询）在 CPA 本机时区跨过零点后不再沿用前一天的结果；同一账户的并发查询合并成一次；单个站点请求 15 秒超时；自定义查询整体（请求加脚本）10 秒超时。
 
 ## 构建与发布（维护者）
 

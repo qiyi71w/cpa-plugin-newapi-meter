@@ -440,6 +440,74 @@ func TestOverviewCacheForceAndCoalescing(t *testing.T) {
 	}
 }
 
+// Across CPA-local midnight, the first overview of the new day queries the
+// site again instead of serving yesterday's today figures from the 60 s
+// cache; within the new day the cache and today's detail reuse it again.
+func TestOverviewTodayCacheEndsAtLocalMidnight(t *testing.T) {
+	h := newHarness(t)
+	u := newUpstream(t)
+	h.clock.t = time.Date(2026, 5, 2, 23, 59, 50, 0, time.FixedZone("UTC+8", 8*3600))
+	id := h.create(u, "A", secretPAT, nil)
+	if first := h.overview(nil); first[0]["cached"] != false || u.count("/api/log/self/stat") != 1 {
+		t.Fatalf("first: cached=%v stat hits=%d", first[0]["cached"], u.count("/api/log/self/stat"))
+	}
+	h.clock.add(5 * time.Second)
+	if same := h.overview(nil); same[0]["cached"] != true || u.count("/api/log/self/stat") != 1 {
+		t.Fatal("same day within 60 s was not served from cache")
+	}
+
+	h.clock.add(15 * time.Second) // 00:00:10 on 2026-05-03, 20 s after the first fetch
+	body := h.do("GET", RoutePrefix+"/overview", nil, nil).json(t)
+	a := body["accounts"].([]any)[0].(map[string]any)
+	if body["today_start"] != "2026-05-03T00:00:00+08:00" || a["cached"] != false || u.count("/api/log/self/stat") != 2 {
+		t.Fatalf("after midnight: today_start=%v cached=%v stat hits=%d", body["today_start"], a["cached"], u.count("/api/log/self/stat"))
+	}
+	if fetched, _ := time.Parse(time.RFC3339, a["fetched_at"].(string)); fetched.Before(time.Date(2026, 5, 3, 0, 0, 0, 0, time.FixedZone("UTC+8", 8*3600))) {
+		t.Fatalf("new day served a reading fetched at %v", fetched)
+	}
+
+	h.clock.add(10 * time.Second)
+	if again := h.overview(nil); again[0]["cached"] != true || u.count("/api/log/self/stat") != 2 {
+		t.Fatal("new day's reading was not cached")
+	}
+	if d := h.do("GET", RoutePrefix+"/detail", url.Values{"id": {id}}, nil); d.Status != 200 || d.json(t)["cached"] != true || u.count("/api/log/self/stat") != 2 {
+		t.Fatalf("today's detail did not reuse the overview reading: %d %s", d.Status, d.Body)
+	}
+}
+
+// A custom query's {{todayStart}} follows the CPA-local day: the first
+// overview after midnight runs the script again with the new day's start.
+func TestCustomTodayCacheEndsAtLocalMidnight(t *testing.T) {
+	h := newHarness(t)
+	zone := time.FixedZone("UTC+8", 8*3600)
+	h.clock.t = time.Date(2026, 5, 2, 23, 59, 50, 0, zone)
+	var hits atomic.Int32
+	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		// todaySpend echoes the {{todayStart}} the script sent, so the value names its day.
+		_, _ = w.Write([]byte(`{"from": ` + r.URL.Query().Get("from") + `}`))
+	}))
+	t.Cleanup(site.Close)
+	script := `({ request: { url: "{{baseUrl}}/q?from={{todayStart}}" }, extractor: function (r) { return { remaining: 1, unit: "USD", todaySpend: r.from }; } })`
+	if r := h.do("POST", RoutePrefix+"/accounts", nil, map[string]any{"name": "C", "source": "custom", "custom_script": script, "proxy": "direct",
+		"custom_placeholders": map[string]any{"baseUrl": site.URL}}); r.Status != http.StatusCreated {
+		t.Fatalf("create %d %s", r.Status, r.Body)
+	}
+	day := func(d int) float64 { return float64(time.Date(2026, 5, d, 0, 0, 0, 0, zone).Unix()) }
+	if first := h.overview(nil); first[0]["today_spend"] != day(2) || hits.Load() != 1 {
+		t.Fatalf("first: today_spend=%v hits=%d", first[0]["today_spend"], hits.Load())
+	}
+	h.clock.add(20 * time.Second)
+	if next := h.overview(nil); next[0]["cached"] != false || next[0]["today_spend"] != day(3) || hits.Load() != 2 {
+		t.Fatalf("after midnight: cached=%v today_spend=%v hits=%d", next[0]["cached"], next[0]["today_spend"], hits.Load())
+	}
+	h.clock.add(10 * time.Second)
+	if again := h.overview(nil); again[0]["cached"] != true || hits.Load() != 2 {
+		t.Fatal("new day's custom result was not cached")
+	}
+}
+
 func TestLastSuccessSurvivesLaterFailure(t *testing.T) {
 	h := newHarness(t)
 	u := newUpstream(t)

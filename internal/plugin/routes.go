@@ -354,7 +354,7 @@ func (p *Plugin) overviewOf(ctx context.Context, a store.Account, force bool) ov
 // reading is an account's today query, shared by the overview and today's
 // period of the detail through one cache entry.
 func (p *Plugin) reading(ctx context.Context, a store.Account, force bool) (newapi.Reading, time.Time, bool) {
-	key := cache.Key{Account: a.ID, Query: "overview", Fingerprint: fingerprint(a)}
+	key := cache.Key{Account: a.ID, Query: p.todayQuery("overview"), Fingerprint: fingerprint(a)}
 	return p.overviews.Get(key, force, func() newapi.Reading {
 		r := p.source.Fetch(ctx, a)
 		p.logProbes(a.ID, r.Probes)
@@ -365,6 +365,13 @@ func (p *Plugin) reading(ctx context.Context, a store.Account, force bool) (newa
 		}
 		return r
 	})
+}
+
+// todayQuery names a query about today for the cache: it includes the
+// CPA-local date, so a reading made before local midnight is never served
+// for the new day.
+func (p *Plugin) todayQuery(name string) string {
+	return name + ":" + p.now().Format(time.DateOnly)
 }
 
 // detailResponse is one built-in account's figures for one period.

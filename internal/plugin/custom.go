@@ -70,7 +70,7 @@ func customViewOf(r customquery.Result, s customquery.Summary) customView {
 // cached and coalesced like a built-in one; the account status comes from
 // the same rules (status.Decide) with the query as its one probe.
 func (p *Plugin) customOverviewOf(ctx context.Context, a store.Account, force bool, item overviewItem) overviewItem {
-	key := cache.Key{Account: a.ID, Query: "custom", Fingerprint: customFingerprint(a)}
+	key := cache.Key{Account: a.ID, Query: p.todayQuery("custom"), Fingerprint: customFingerprint(a)}
 	r, at, hit := p.customs.Get(key, force, func() customquery.Result {
 		r := p.custom.Run(ctx, a)
 		if f := customquery.Summarize(r, nil).Failure; f != nil {
