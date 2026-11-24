@@ -628,19 +628,36 @@ code,
 .nm-state--chip[data-state="needs_action"] {
   background: var(--nm-danger-bg);
 }
+/* Every item but the last reserves the "8px · 8px" gap after itself with an
+   invisible separator, so spacing still follows the font's own "·". The
+   visible separator is drawn into that gap by the following item; on a
+   wrapped line's first item it falls left of the box and is clipped, and a
+   line's trailing gap stays blank. */
 .nm-meta {
   display: flex;
   flex-wrap: wrap;
   margin: 4px 0 0;
+  overflow: hidden;
   font-size: var(--nm-fs-sm);
   color: var(--nm-text-2);
 }
 .nm-meta > span {
+  position: relative;
   overflow-wrap: anywhere;
+}
+.nm-meta > span:not(:last-child)::after {
+  content: "·";
+  content: "·" / "";
+  padding: 0 8px;
+  visibility: hidden;
 }
 .nm-meta > span + span::before {
   content: "·";
-  padding: 0 8px;
+  content: "·" / "";
+  position: absolute;
+  top: 0;
+  right: 100%;
+  margin-right: 8px;
   color: var(--nm-text-3);
 }
 
