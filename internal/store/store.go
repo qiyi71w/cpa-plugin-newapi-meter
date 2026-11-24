@@ -184,23 +184,25 @@ func (s *Store) checkDir() error {
 }
 
 // readFile reads the data file, first restricting it to 0600 when it grants
-// group or other access (for example a restored backup). It reports
-// fs.ErrNotExist when there is no file yet.
+// group or other access (for example a restored backup). Anything but a
+// regular file (a directory, or a symlink to one) is refused before its mode
+// is touched. It reports fs.ErrNotExist when there is no file yet.
 func (s *Store) readFile() ([]byte, error) {
 	f, err := os.Open(s.path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	if runtime.GOOS != "windows" {
-		info, err := f.Stat()
-		if err != nil {
-			return nil, err
-		}
-		if info.Mode().Perm()&groupOrOther != 0 {
-			if err := f.Chmod(0o600); err != nil {
-				return nil, fmt.Errorf("%w: %v", ErrFileNotPrivate, err)
-			}
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("not a regular file (%s)", info.Mode().Type())
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm()&groupOrOther != 0 {
+		if err := f.Chmod(0o600); err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrFileNotPrivate, err)
 		}
 	}
 	return io.ReadAll(f)
@@ -238,7 +240,8 @@ func (s *Store) load() ([]Account, error) {
 		return nil, &FileError{FileUnavailable, s.path, err}
 	}
 	var head struct {
-		SchemaVersion *int `json:"schema_version"`
+		SchemaVersion *int            `json:"schema_version"`
+		Accounts      json.RawMessage `json:"accounts"`
 	}
 	if err := json.Unmarshal(raw, &head); err != nil {
 		return nil, &FileError{FileCorrupt, s.path, err}
@@ -248,6 +251,11 @@ func (s *Store) load() ([]Account, error) {
 	}
 	if *head.SchemaVersion > SchemaVersion {
 		return nil, &FileError{FileNewer, s.path, fmt.Errorf("schema_version %d is newer than %d", *head.SchemaVersion, SchemaVersion)}
+	}
+	// A file without an account list is not an empty store: saving over it
+	// would silently replace whatever it is.
+	if len(head.Accounts) == 0 || string(head.Accounts) == "null" {
+		return nil, &FileError{FileCorrupt, s.path, errors.New("missing accounts")}
 	}
 	var doc document
 	dec := json.NewDecoder(bytes.NewReader(raw))
