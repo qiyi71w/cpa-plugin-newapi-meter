@@ -182,13 +182,13 @@ func resolveQuery(out *Account, in Input, prev *Account) error {
 	out.BaseURL = base
 
 	out.Credential = strings.TrimSpace(in.Credential)
-	if prev != nil {
-		if out.Credential == "" || out.Credential == Mask(prev.Credential) {
-			out.Credential = prev.Credential
-		}
-		keepSecret(&out.CustomPlaceholders.APIKey, prev.CustomPlaceholders.APIKey)
-		keepSecret(&out.CustomPlaceholders.AccessToken, prev.CustomPlaceholders.AccessToken)
+	if prev != nil && (out.Credential == "" || out.Credential == Mask(prev.Credential)) {
+		out.Credential = prev.Credential
 	}
+	// Custom-query secrets do not apply to a built-in account and are
+	// dropped, as resolveCustom drops the built-in credential, so switching
+	// back to custom later never reuses one the form no longer shows.
+	out.CustomPlaceholders.APIKey, out.CustomPlaceholders.AccessToken = "", ""
 	if out.Credential == "" {
 		return &ValidationError{"credential", ReasonRequired}
 	}
@@ -217,7 +217,7 @@ func resolveCustom(out *Account, prev *Account) error {
 		}
 		ph.BaseURL = base
 	}
-	if prev != nil {
+	if prev != nil && prev.Source == SourceCustom {
 		keepSecret(&ph.APIKey, prev.CustomPlaceholders.APIKey)
 		keepSecret(&ph.AccessToken, prev.CustomPlaceholders.AccessToken)
 	}

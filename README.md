@@ -320,7 +320,7 @@ plugins:
 }
 ```
 
-`custom_script` 必填；`custom_placeholders.baseUrl` 可选，填写时规则与 `base_url` 相同，保存后同时作为账户的 `base_url`。`apiKey`、`accessToken` 留空或原样传回打码值表示保留原值。
+`custom_script` 必填；`custom_placeholders.baseUrl` 可选，填写时规则与 `base_url` 相同，保存后同时作为账户的 `base_url`。`apiKey`、`accessToken` 留空或原样传回打码值表示保留原值。切换数据来源时，另一种来源的密钥不保留：保存为自定义查询会清除内置来源的 `credential` 和 `user_id`，保存为内置来源会清除 `apiKey` 和 `accessToken`，之后再切回自定义查询需要重新填写。
 
 `GET /accounts` 返回 `{"accounts": […], "data_file": "<数据文件路径>"}`：`data_file` 是数据文件 `accounts.json` 的绝对路径（管理视图在列表下显示它，方便备份）。列表中的账户：`id`、`order`、`name`、`source`、`base_url`、`credential_masked`、`credential_kind`（`pat` / `legacy`）、`user_id`、`low_balance_threshold`、`proxy`、`custom_script`、`custom_placeholders`（`baseUrl`、`userId`、`apiKeyMasked`、`accessTokenMasked`）。完整凭据从不出现在任何响应或插件日志里。
 

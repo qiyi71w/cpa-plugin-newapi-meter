@@ -302,6 +302,66 @@ func TestAccountRoutesMaskCredentials(t *testing.T) {
 	}
 }
 
+// A custom account switched to built-in and back with blank secrets sends no
+// apiKey from before the detour, neither in a connection test nor in the
+// overview, and the built-in account lists no masked custom secrets.
+func TestSwitchingSourceDoesNotReuseCustomSecrets(t *testing.T) {
+	const oldKey = "sk-synthetic-old-custom-key-9004"
+	h := newHarness(t)
+	u := newUpstream(t)
+	var sent atomic.Value
+	sent.Store("")
+	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sent.Store(r.Header.Get("X-Key"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"left": 1}`))
+	}))
+	t.Cleanup(site.Close)
+	script := `({ request: { url: "{{baseUrl}}/q", headers: { "X-Key": "{{apiKey}}" } }, extractor: function (r) { return { remaining: r.left, unit: "USD" }; } })`
+	asCustom := func(id, key string) map[string]any {
+		return map[string]any{"id": id, "name": "C", "source": "custom", "custom_script": script, "proxy": "direct",
+			"custom_placeholders": map[string]any{"baseUrl": site.URL, "apiKey": key, "accessToken": "", "userId": ""}}
+	}
+	r := h.do("POST", RoutePrefix+"/accounts", nil, asCustom("", oldKey))
+	if r.Status != http.StatusCreated {
+		t.Fatalf("create %d %s", r.Status, r.Body)
+	}
+	id := r.json(t)["account"].(map[string]any)["id"].(string)
+
+	r = h.do("PUT", RoutePrefix+"/accounts", nil, map[string]any{"id": id, "name": "C", "source": "newapi", "base_url": u.URL, "credential": secretPAT, "proxy": "direct",
+		"custom_script": "", "custom_placeholders": map[string]any{"baseUrl": "", "apiKey": "", "accessToken": "", "userId": ""}})
+	if r.Status != 200 {
+		t.Fatalf("to built-in %d %s", r.Status, r.Body)
+	}
+	ph := h.do("GET", RoutePrefix+"/accounts", nil, nil).json(t)["accounts"].([]any)[0].(map[string]any)["custom_placeholders"].(map[string]any)
+	if ph["apiKeyMasked"] != "" || ph["accessTokenMasked"] != "" {
+		t.Fatalf("built-in account lists custom secrets: %v", ph)
+	}
+
+	if tr := h.do("POST", RoutePrefix+"/accounts/test", nil, asCustom(id, "")); tr.Status != 200 || sent.Load() != "" {
+		t.Fatalf("connection test: %d, site received X-Key %q", tr.Status, sent.Load())
+	}
+	if r := h.do("PUT", RoutePrefix+"/accounts", nil, asCustom(id, "")); r.Status != 200 {
+		t.Fatalf("back to custom %d %s", r.Status, r.Body)
+	}
+	h.overview(url.Values{"force": {"1"}})
+	if got := sent.Load(); got != "" {
+		t.Fatalf("overview sent X-Key %q from before the detour", got)
+	}
+
+	// Same source: a blank apiKey still keeps the stored one.
+	if r := h.do("PUT", RoutePrefix+"/accounts", nil, asCustom(id, "sk-synthetic-new-custom-key-9005")); r.Status != 200 {
+		t.Fatalf("set key %d %s", r.Status, r.Body)
+	}
+	if r := h.do("PUT", RoutePrefix+"/accounts", nil, asCustom(id, "")); r.Status != 200 {
+		t.Fatalf("keep key %d %s", r.Status, r.Body)
+	}
+	h.overview(url.Values{"force": {"1"}})
+	if got := sent.Load(); got != "sk-synthetic-new-custom-key-9005" {
+		t.Fatalf("same-source blank apiKey sent %q", got)
+	}
+}
+
 func TestOverviewAndLogsNeverContainSecrets(t *testing.T) {
 	h := newHarness(t)
 	ok := newUpstream(t)

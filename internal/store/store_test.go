@@ -179,6 +179,49 @@ func TestCustomAccountKeepsSecretsAndTakesHostFromBaseURL(t *testing.T) {
 	}
 }
 
+// Saving as built-in drops the custom-query secrets, as saving as custom
+// drops the built-in credential, so a later switch back with blank fields
+// starts without them instead of reusing secrets the form no longer shows.
+func TestSwitchingSourceDropsTheOtherSourcesSecrets(t *testing.T) {
+	const key, token = "sk-synthetic-custom-api-key-0005", "synthetic-custom-access-token-0006"
+	s := openTemp(t)
+	custom := Input{Name: "C", Source: SourceCustom, CustomScript: "({})", CustomPlaceholders: Placeholders{APIKey: key, AccessToken: token}}
+	a, err := s.Create(custom)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// To built-in; the form sends the hidden custom fields blank or masked.
+	b, err := s.Update(a.ID, Input{Name: "C", Source: SourceNewAPI, BaseURL: "https://x.example.com", Credential: pat,
+		CustomPlaceholders: Placeholders{APIKey: Mask(key)}})
+	if err != nil || b.Credential != pat || b.CustomPlaceholders.APIKey != "" || b.CustomPlaceholders.AccessToken != "" {
+		t.Fatalf("as built-in = %+v %v", b, err)
+	}
+	raw, _ := os.ReadFile(s.Path())
+	if strings.Contains(string(raw), key) || strings.Contains(string(raw), token) {
+		t.Fatal("data file still holds the custom secrets of a built-in account")
+	}
+	// Trying and saving it as custom again with blank secrets uses none.
+	custom.CustomPlaceholders = Placeholders{}
+	if r, err := Resolve(custom, &b); err != nil || r.CustomPlaceholders.APIKey != "" || r.CustomPlaceholders.AccessToken != "" {
+		t.Fatalf("resolve back to custom = %+v %v", r, err)
+	}
+	c, err := s.Update(a.ID, custom)
+	if err != nil || c.CustomPlaceholders.APIKey != "" || c.CustomPlaceholders.AccessToken != "" || c.Credential != "" {
+		t.Fatalf("back to custom = %+v %v", c, err)
+	}
+
+	// A built-in record written by an older build with leftover custom
+	// secrets is read without them.
+	leftover := `{"schema_version":1,"accounts":[{"id":"acc_00000000000000b1","order":0,"name":"Old","source":"newapi","base_url":"https://x.example.com","credential":"` + pat + `","proxy":"direct","custom_placeholders":{"apiKey":"` + key + `","accessToken":"` + token + `"}}]}`
+	if err := os.WriteFile(s.Path(), []byte(leftover), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old, err := s.Get("acc_00000000000000b1")
+	if err != nil || old.CustomPlaceholders.APIKey != "" || old.CustomPlaceholders.AccessToken != "" || old.Credential != pat {
+		t.Fatalf("leftover record = %+v %v", old, err)
+	}
+}
+
 func TestPermissions(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix permission bits")

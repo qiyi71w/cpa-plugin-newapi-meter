@@ -243,11 +243,17 @@ func (s *Store) load() ([]Account, error) {
 		return nil, &FileError{FileCorrupt, s.path, err}
 	}
 	seen := make(map[string]bool, len(doc.Accounts))
-	for _, a := range doc.Accounts {
+	for i := range doc.Accounts {
+		a := &doc.Accounts[i]
 		if a.ID == "" || seen[a.ID] {
 			return nil, &FileError{FileCorrupt, s.path, errors.New("account id missing or duplicated")}
 		}
 		seen[a.ID] = true
+		// A built-in account saved by an older build may still carry the
+		// custom-query secrets it had before switching; they never apply.
+		if a.Source != SourceCustom {
+			a.CustomPlaceholders.APIKey, a.CustomPlaceholders.AccessToken = "", ""
+		}
 	}
 	sort.SliceStable(doc.Accounts, func(i, j int) bool { return doc.Accounts[i].Order < doc.Accounts[j].Order })
 	return doc.Accounts, nil
